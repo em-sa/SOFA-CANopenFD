@@ -1,0 +1,35 @@
+## CMake / MSVC build trees
+build/
+out/
+
+## Visual Studio / VS Code local state
+.vs/
+.vscode/
+*.user
+*.suo
+
+## Build artefacts that may escape build/
+*.obj
+*.o
+*.lib
+*.a
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+## No binaries are committed: the repository is source-only. A ready-to-run
+## executable demo is published separately as a GitHub Release. See README.md.
+
+## Editor / OS scratch
+*.log
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+## Internal development history (not for publication)
+HISTORY.md
+
+## Word sources are not published — only the exported PDF ships in doc/
+doc/*.docx

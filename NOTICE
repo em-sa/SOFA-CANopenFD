@@ -1,0 +1,35 @@
+SOFA — Secure Object Fieldbus Access
+Copyright (c) 2026 Embedded Systems Academy (EmSA), www.esacademy.com
+
+This product is licensed under the Apache License, Version 2.0 (the
+"License"); see the LICENSE file. You may not use this product except in
+compliance with the License.
+
+------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------
+
+third_party/mbedtls/
+    A subset of Arm Mbed TLS (AES, GCM, SHA-256, HKDF and supporting
+    glue) is vendored under third_party/mbedtls/. Only the files needed
+    by SOFA are included; the upstream tree has been trimmed but the
+    retained source files are otherwise unmodified. SOFA's own Mbed TLS
+    build configuration lives in shared/mbedtls_fbsec_config.h and is not
+    part of upstream.
+
+    Mbed TLS is provided by Arm Limited and contributors under a dual
+    Apache-2.0 OR GPL-2.0-or-later license. SOFA takes Mbed TLS under the
+    Apache-2.0 option, consistent with SOFA's own license. The full
+    upstream license text is preserved at third_party/mbedtls/LICENSE.
+
+    Upstream project: https://github.com/Mbed-TLS/mbedtls
+
+------------------------------------------------------------------------
+Optional runtime dependency (not redistributed)
+------------------------------------------------------------------------
+
+The CANopen FD bus simulator can optionally bridge to a physical CAN FD
+network through PEAK-System's PCANBasic.dll, which it resolves at runtime
+via LoadLibrary. PCANBasic.dll is NOT included in this distribution and
+is governed by PEAK-System's own license. SOFA builds and runs without
+it; only the optional hardware bridge is unavailable when it is absent.

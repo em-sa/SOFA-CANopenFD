@@ -1,0 +1,75 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright (c) 2026 Embedded Systems Academy (EmSA). All rights reserved. */
+/**
+ * @file    server_common_od.c
+ * @brief   SOFA server_common, secure OD setup, implementation.
+ *          aka FBsec - FieldBus Security
+ * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
+ * @version V1.0 of 07-MAY-2026
+ *
+ * Copyright (c) 2026 Embedded Systems Academy.
+ * Licensed under the Apache License, Version 2.0
+ * (https://www.apache.org/licenses/LICENSE-2.0).
+ */
+
+#include "server_common_od.h"
+#include "server_common_hooks.h"
+#include "server_common_keys.h"
+
+#include <stdio.h>
+
+#include "fbsec_secure_od.h"
+
+int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path) {
+  fbsec_sod_init();
+  fbsec_server_hooks_set_my_dev(my_dev);
+
+  (void)fbsec_server_hooks_prefill_secure_ro(my_dev); /* always succeeds (see hooks.h) */
+
+  /* All four default entries leave .key_id = FBSEC_SOD_KEY_NONE so any
+     provisioned key passes the AEAD step; the actual role policy
+     (Provisioning Session Key + Integrator Session Key can read/write;
+     Operator Session Key can read but not write) lives in
+     fbsec_sod_port_role_allowed. value_type stays at the default (BIN)
+     so trace renders as hex. */
+  fbsec_sod_entry_t e_sro = {
+    .data_id      = FBSEC_SERVER_ENTRY_SRD_DATA_ID,
+    .key_id       = FBSEC_SOD_KEY_NONE,
+    .access_flags = FBSEC_SOD_ACCESS_SECURE_RO,
+    .data_len     = FBSEC_SERVER_ENTRY_SECURE_LEN
+  };
+  fbsec_sod_entry_t e_swo = {
+    .data_id      = FBSEC_SERVER_ENTRY_SWR_DATA_ID,
+    .key_id       = FBSEC_SOD_KEY_NONE,
+    .access_flags = FBSEC_SOD_ACCESS_SECURE_WO,
+    .data_len     = FBSEC_SERVER_ENTRY_SECURE_LEN
+  };
+  fbsec_sod_entry_t e_pro = {
+    .data_id      = FBSEC_SERVER_ENTRY_RD_DATA_ID,
+    .key_id       = FBSEC_SOD_KEY_NONE,
+    .access_flags = FBSEC_SOD_ACCESS_SECURE_RO,
+    .data_len     = FBSEC_SERVER_ENTRY_VALUE_LEN
+  };
+  fbsec_sod_entry_t e_pwo = {
+    .data_id      = FBSEC_SERVER_ENTRY_WR_DATA_ID,
+    .key_id       = FBSEC_SOD_KEY_NONE,
+    .access_flags = FBSEC_SOD_ACCESS_SECURE_WO,
+    .data_len     = FBSEC_SERVER_ENTRY_VALUE_LEN
+  };
+  if (!fbsec_sod_register_entry(&e_sro) || !fbsec_sod_register_entry(&e_swo)
+      || !fbsec_sod_register_entry(&e_pro) || !fbsec_sod_register_entry(&e_pwo)) {
+    fprintf(stderr, "server_common: failed to register secure entries\n");
+    return -1;
+  }
+
+  /* Load --key-file (if any) first; demo keys fill any unset slots. */
+  if (key_file_path != NULL) {
+    if (fbsec_server_load_key_file(key_file_path) != 0) {
+      return -1;
+    }
+  }
+  fbsec_server_install_demo_keys_if_unset();
+  return 0;
+}
+
+/* EOF */

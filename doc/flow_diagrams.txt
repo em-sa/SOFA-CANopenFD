@@ -1,0 +1,215 @@
+================================================================================
+  SOFA Secure-Tunnel Protocol Flows - Sequence Diagrams
+
+  Module:   SOFA secure tunnel (visualization)
+  Purpose:  paste into https://sequencediagram.org/ to render the four
+            client/server exchanges (single SRD, single SWR, cyclic SRD,
+            cyclic SWR) as one annotated sequence diagram.
+  Version:  V1.0 of 08-MAY-2026
+  License:  Apache License, Version 2.0
+            www.apache.org/licenses/LICENSE-2.0
+  Author:   Embedded Systems Academy, Inc (USA) and GmbH (Germany)
+================================================================================
+
+
+HOW TO USE
+  Copy everything between the BEGIN-DIAGRAM and END-DIAGRAM markers
+  below. Open https://sequencediagram.org/ in a browser, paste into the
+  left-hand editor pane, and the rendered diagram appears in the right
+  pane. Export to PNG / SVG via the toolbar.
+
+PROTOCOL NOTES
+  - Bit 6 of the wire keyid signals "keep this session alive after
+    the access". A single-shot read or write has bit 6 = 0; a
+    cyclic-capable single (the first iteration of a cyclic-mode
+    loop) has bit 6 = 1.
+  - The data-bearing response is byte-identical to the single-shot
+    response whether bit 6 was set or not (no session_id on the
+    wire). The server retains a session indexed by (client_node,
+    data_id) and accepts follow-up poll requests against it. Both
+    peers identify the session by that pair and bind freshness via
+    the GCM nonce (nonce_base XOR (0^64 || counter_be32)).
+  - R = AEAD random size (12 bytes default).
+    N = entry plaintext length (4 or 16 bytes for the demo entries).
+    T = AEAD tag size (8 bytes default).
+  - Cyclic-mode poll counter is hard-capped at
+    FBSEC_AEAD_KEY_USE_LIMIT = 1 000 000 frames per session
+    (`shared/fbsec_config.h`). The protocol supports any session length
+    up to that bound; the menu's options 5 and 6 just happen to run
+    300 iterations (1 single + 299 polls). After the limit the server
+    aborts and the client must re-arm with a fresh single access.
+  - In the CANopen FD variant the message body sits inside a USDO
+    expedited PDU; the CAN ID encodes the SENDER's node id in its
+    low 7 bits (0x600 + sender for requests, 0x580 + sender for
+    responses). Future variants supply their own transport envelope.
+    The secure-tunnel layer ABOVE the transport sees the same byte
+    sequences in every variant; that is what these diagrams describe.
+
+
+-------------------- BEGIN DIAGRAM (sequencediagram.org) ----------------------
+
+title SOFA Secure-Tunnel Protocol Flows
+
+#note SOFA V1.0, 8-MAY-26\nbit 6 of keyid signals "keep this session alive"\nR = 12B random, N = entry length, T = 8B tag
+
+participant Client
+participant Server
+
+
+==Mode 1: Single Secure Read (SRD)==
+
+group Single SRD - keyid bit6 = 0
+
+Client->(1)Server: <align:center>**SRD Pass 1**\nkeyid[1] (bit6=0)\n|| client_random[R]
+
+Server->Server: <align:center>read OD entry plaintext\ngenerate server_random[R]\nnonce = client_random XOR server_random\nAEAD-seal (READ_RESPONSE direction)
+
+Server->(1)Client: <align:center>**SRD Pass 1 ACK** (empty)
+
+Client->(1)Server: <align:center>**SRD Pass 2** (empty body)
+
+Server->(1)Client: <align:center>**SRD Pass 2 reply**\nserver_random[R]\n|| cipher[N]\n|| tag[T]
+
+Client->Client: <align:center>nonce = client_random XOR server_random\nAEAD-open\nverify tag, output plaintext
+
+end
+
+
+==Mode 2: Single Secure Write (SWR)==
+
+group Single SWR - keyid bit6 = 0
+
+Client->(1)Server: <align:center>**SWR Pass 1** (empty body)
+
+Server->Server: generate server_random[R]
+
+Server->(1)Client: <align:center>**SWR Pass 1 reply**\nserver_random[R]
+
+Client->Client: <align:center>generate client_random[R]\nnonce = client_random XOR server_random\nAEAD-seal (WRITE_REQUEST direction)
+
+Client->(1)Server: <align:center>**SWR Pass 2**\nkeyid[1] (bit6=0)\n|| client_random[R]\n|| cipher[N]\n|| tag[T]
+
+Server->Server: <align:center>nonce = client_random XOR server_random\nAEAD-open\nverify tag, write OD entry
+
+Server->(1)Client: <align:center>**SWR Pass 2 ACK** (empty)
+
+end
+
+
+==Mode 3: Cyclic Secure Read (1 single + up to 999 999 polls)==
+
+group Iteration 1 - cyclic-capable single SRD (keyid bit6 = 1)
+
+Client->(1)Server: <align:center>**SRD Pass 1**\nkeyid[1] (bit6=1)\n|| client_random[R]
+
+Server->Server: <align:center>read OD entry, generate server_random\nnonce_base = client_random XOR server_random\nAEAD-seal (READ_RESPONSE)\nstash nonce_base, counter = 0
+
+Server->(1)Client: <align:center>**SRD Pass 1 ACK** (empty)
+
+Client->(1)Server: <align:center>**SRD Pass 2** (empty body)
+
+Server->(1)Client: <align:center>**SRD Pass 2 reply**\nserver_random[R]\n|| cipher[N]\n|| tag[T]
+
+Client->Client: <align:center>nonce_base = client_random XOR server_random\nAEAD-open, output plaintext\nstash nonce_base, counter = 0
+
+end
+
+group Iterations 2..N - poll loop (N up to FBSEC_AEAD_KEY_USE_LIMIT = 1 000 000)
+
+loop up to 999 999 polls (demo menu does 299)
+  Client->Client: <align:center>counter += 1\nnonce = nonce_base XOR (0^64 || counter_be32)
+  Client->(1)Server: <align:center>**SRD poll**\ncounter_low[1]
+  Server->Server: <align:center>counter += 1\nnonce = nonce_base XOR (0^64 || counter_be32)\nread fresh OD entry\nAEAD-seal (READ_POLL_RESPONSE)
+  Server->(1)Client: <align:center>**SRD poll reply**\ncounter_low[1]\n|| cipher[N]\n|| tag[T]
+  Client->Client: AEAD-open, output plaintext
+end
+
+end
+
+
+==Mode 4: Cyclic Secure Write (1 single + up to 999 999 polls)==
+
+group Iteration 1 - cyclic-capable single SWR (Pass-2 keyid bit6 = 1)
+
+Client->(1)Server: <align:center>**SWR Pass 1** (empty body)
+
+Server->Server: generate server_random[R]
+
+Server->(1)Client: <align:center>**SWR Pass 1 reply**\nserver_random[R]
+
+Client->Client: <align:center>generate client_random[R]\nnonce = client_random XOR server_random\nAEAD-seal (WRITE_REQUEST)
+
+Client->(1)Server: <align:center>**SWR Pass 2**\nkeyid[1] (bit6=1)\n|| client_random[R]\n|| cipher[N]\n|| tag[T]
+
+Server->Server: <align:center>nonce_base = client_random XOR server_random\nAEAD-open, verify tag\nwrite OD entry\nstash nonce_base, counter = 0
+
+Server->(1)Client: <align:center>**SWR Pass 2 ACK** (empty)
+
+Client->Client: <align:center>stash nonce_base, counter = 0
+
+end
+
+group Iterations 2..N - poll loop (N up to FBSEC_AEAD_KEY_USE_LIMIT = 1 000 000)
+
+loop up to 999 999 polls (demo menu does 299)
+  Client->Client: <align:center>counter += 1\nnonce = nonce_base XOR (0^64 || counter_be32)\nAEAD-seal (WRITE_POLL_REQUEST)
+  Client->(1)Server: <align:center>**SWR poll**\ncounter_low[1]\n|| cipher[N]\n|| tag[T]
+  Server->Server: <align:center>counter += 1\nnonce = nonce_base XOR (0^64 || counter_be32)\nAEAD-open, verify tag\nwrite OD entry
+  Server->(1)Client: <align:center>**SWR poll ACK** (empty)
+end
+
+note over Client, Server: <align:center>When counter reaches FBSEC_AEAD_KEY_USE_LIMIT (1 000 000)\nthe server aborts; client must re-arm via a fresh\ncyclic-capable single read or write.
+
+end
+
+
+==Abort path (any pass)==
+
+group Server abort
+
+Client->(1)Server: any request
+
+alt validation fails
+  Server->(1)Client: <align:center>**ABORT**\nabort_code (4 bytes LE)\n(SDO-aligned codes per\nshared/fbsec_secure_od.h)
+else success
+  Server->(1)Client: <align:center>normal response
+end
+
+end
+
+
+--------------------- END DIAGRAM (sequencediagram.org) -----------------------
+
+
+SOURCE-CODE CROSS-REFERENCES
+  Client side:
+    fbsec_secure_read         single SRD
+    fbsec_secure_write        single SWR
+    fbsec_secure_read_armed   cyclic-capable single SRD (iteration 1
+                              of mode 3)
+    fbsec_secure_write_armed  cyclic-capable single SWR (iteration 1
+                              of mode 4)
+    fbsec_secure_poll_read    poll iterations of mode 3
+    fbsec_secure_poll_write   poll iterations of mode 4
+
+    All in shared/fbsec_secure_proto.{h,c}.
+
+  Server side:
+    fbsec_sod_dispatch        the single entry point for all four modes
+    arm_read_response         SRD Pass 1 (allocates session if bit-6 set)
+    verify_and_apply_write    SWR Pass 2 (allocates session if bit-6 set)
+    handle_read_poll          SRD poll
+    handle_write_poll         SWR poll
+
+    All in shared/fbsec_secure_od.c.
+
+  AEAD direction tags drive AAD prefix offset 1:
+    READ_RESPONSE       single SRD Pass 2 (also iter 1 of cyclic SRD)
+    WRITE_REQUEST       single SWR Pass 2 (also iter 1 of cyclic SWR)
+    READ_POLL_RESPONSE  cyclic SRD poll responses
+    WRITE_POLL_REQUEST  cyclic SWR poll requests
+
+    Definitions in shared/fbsec_aead.h.
+
+
+/* EOF */
