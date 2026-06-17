@@ -1,0 +1,61 @@
+name: Close external pull requests
+
+# SOFA is maintained in-house by EmSA (see CONTRIBUTING.md). External pull
+# requests are not merged; this workflow closes them automatically with a
+# pointer to the contribution policy. Pull requests opened by the repo
+# owner, organization members, or invited collaborators are left untouched.
+#
+# Uses pull_request_target so the job has the write permission needed to
+# comment on and close pull requests that originate from forks. It never
+# checks out or runs any PR code, so the usual pull_request_target risk
+# (executing untrusted code with a privileged token) does not apply here.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    # Leave maintainer pull requests open; close everything else.
+    if: >-
+      github.event.pull_request.author_association != 'OWNER' &&
+      github.event.pull_request.author_association != 'MEMBER' &&
+      github.event.pull_request.author_association != 'COLLABORATOR'
+    steps:
+      - name: Comment and close
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = [
+              "Thanks for your interest in SOFA!",
+              "",
+              "SOFA is developed and maintained in-house by Embedded Systems",
+              "Academy (EmSA). As described in our CONTRIBUTING guide, we do not",
+              "generally merge external pull requests, so this one is being",
+              "closed automatically.",
+              "",
+              "If you would like to propose a change, please email us at",
+              "opensource@em-sa.com - the idea may still be considered for an",
+              "in-house change. For security issues, see SECURITY.md and do not",
+              "report them in public.",
+              "",
+              "You are of course welcome to fork SOFA under the Apache-2.0",
+              "license. Thank you for understanding.",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body,
+            });
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              state: "closed",
+            });
