@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, secure-OD port hooks + demo data buffers.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 22-JUL-2026
  *
  * Owns the demo-mode implementations of all `fbsec_sod_port_*`
  * callbacks declared in `shared/fbsec_secure_od.h`, together with
@@ -39,8 +39,8 @@ extern "C" {
 
 #define FBSEC_SERVER_ENTRY_RD_DATA_ID    0x20200000u   /**< SECURE_RO  4 B (auto-bumps) */
 #define FBSEC_SERVER_ENTRY_WR_DATA_ID    0x20100000u   /**< SECURE_WO  4 B (shadow)     */
-#define FBSEC_SERVER_ENTRY_SRD_DATA_ID   0xC0180000u   /**< SECURE_RO 16-byte array     */
-#define FBSEC_SERVER_ENTRY_SWR_DATA_ID   0xC0160000u   /**< SECURE_WO 16-byte array     */
+#define FBSEC_SERVER_ENTRY_SRD_DATA_ID   0xC0180000u   /**< C018h authenticated identity */
+#define FBSEC_SERVER_ENTRY_SWR_DATA_ID   0x20160000u   /**< SECURE_WO 16-byte demo array */
 #define FBSEC_SERVER_ENTRY_VALUE_LEN     4u
 #define FBSEC_SERVER_ENTRY_SECURE_LEN    16u
 
@@ -55,13 +55,16 @@ extern "C" {
 void fbsec_server_hooks_set_my_dev(uint16_t my_dev);
 
 /**
- * @brief Pre-fill the SECURE_RO 0xC0180000 backing buffer with a
- *        16-byte demo identity pattern: @p my_dev (BE) followed by
- *        a fixed 14-byte byte-index sequence `02 03 ... 0F`.
+ * @brief Fill the C018h (0xC0180000) backing buffer with the real 1018h
+ *        identity quad (vendor id, product code, revision, serial) read
+ *        from the constant-OD table.
  *
- * @retval true   always (no failure path).
+ * @retval true   the 1018h identity is fully loaded (16 bytes); C018h can
+ *                be served.
+ * @retval false  1018h is absent (no --od-file, or incomplete); the
+ *                caller should not register C018h.
  */
-bool fbsec_server_hooks_prefill_secure_ro(uint16_t my_dev);
+bool fbsec_server_hooks_load_identity(void);
 
 /** Read-only view of the 4-byte SECURE_RO/WO shadow value. */
 const uint8_t *fbsec_server_hooks_value(void);

@@ -5,7 +5,7 @@
  * @brief   SOFA CANopen FD, USDO-initiator client main.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 20-JUL-2026
  *
  * Thin variant entry point: connect to the CAN FD bus simulator via
  * `fbsec_co_fd_carrier`, send `SIM_PEER_ANNOUNCE` (role client),
@@ -53,6 +53,16 @@
 #include "fbsec_co_fd_carrier.h"
 #include "fbsec_co_fd_frame.h"
 #include "fbsec_co_fd_usdo.h"
+
+/* The capability / status descriptor (0xC000 / 0xC001) is read-only and
+   unauthenticated, and the server serves it in EVERY build - so the `caps`
+   command is unconditional. Only commissioning is asymmetric-only. */
+#include "fbsec_descriptor.h"
+#include "client_common_caps.h"
+
+#if FBSEC_FEATURE_ASYM
+#include "client_common_commission.h"
+#endif
 
 /* ---- Compile-time configuration ---------------------------------------- */
 
@@ -121,12 +131,12 @@ static fbsec_secure_status_t transport_read(
   const uint8_t *req_body, uint16_t req_len,
   uint8_t *buf, uint32_t buf_size,
   uint32_t timeout_ms,
-  uint32_t *len_out, uint32_t *abort_out);
+  uint32_t *len_out, fbsec_abort_t *abort_out);
 static fbsec_secure_status_t transport_write(
   void *ctx, uint16_t device_id, uint32_t data_id,
   const uint8_t *buf, uint32_t len,
   uint32_t timeout_ms,
-  uint32_t *abort_out);
+  fbsec_abort_t *abort_out);
 
 static const fbsec_secure_transport_t g_transport = {
   transport_read,
@@ -143,6 +153,173 @@ uint16_t fbsec_secure_port_get_client_id(void) {
   return g_my_dev;
 }
 
+/* ---- Descriptor CLI commands (caps, and asym-only commission) --------- */
+
+/**
+ * @brief Name of the single AEAD primitive selected by a descriptor bitmap.
+ *
+ * The descriptor's sub 0x02 low byte is a bitmap; a device normally
+ * advertises exactly one primitive. Reports the lowest bit set.
+ *
+ * @param bitmap  FBSEC_DESC_AEAD_* bitmap (low byte of sub 0x02).
+ * @return static, human-readable primitive name.
+ */
+static const char *aead_bitmap_name(uint8_t bitmap) {
+  if ((bitmap & FBSEC_DESC_AEAD_AES128_GCM) != 0u) return "AES-128-GCM";
+  if ((bitmap & FBSEC_DESC_AEAD_AES256_GCM) != 0u) return "AES-256-GCM";
+  if ((bitmap & FBSEC_DESC_AEAD_ASCON128)   != 0u) return "ASCON-128";
+  if ((bitmap & FBSEC_DESC_AEAD_CHACHA20)   != 0u) return "ChaCha20-Poly1305";
+  return "unknown";
+}
+
+/**
+ * @brief Name of a CiA 720 security profile number.
+ */
+static const char *profile_name(uint8_t p) {
+  switch (p) {
+    case FBSEC_PROFILE_CUSTOM:       return "Custom";
+    case FBSEC_PROFILE_OPEN:         return "Open";
+    case FBSEC_PROFILE_CLAIMED:      return "Claimed";
+    case FBSEC_PROFILE_AUTHORIZED:   return "Authorized";
+    case FBSEC_PROFILE_IDENTIFIED:   return "Identified";
+    case FBSEC_PROFILE_CONFIDENTIAL: return "Confidential";
+    default:                         return "unknown";
+  }
+}
+
+/**
+ * @brief Print a decoded C000h capability descriptor, sub-index by sub-index.
+ *
+ * Prints only the sub-indices the device actually returned; `highest_sub`
+ * bounds the record.
+ *
+ * @param target  target node id (for the heading).
+ * @param caps    decoded descriptor.
+ */
+static void print_caps(uint32_t target, const fbsec_caps_t *caps) {
+  printf("capability descriptor of node %u:\n", (unsigned)target);
+  printf("  highest sub-index       : 0x%02X\n", (unsigned)caps->highest_sub);
+  if (caps->highest_sub >= 0x01u) {
+    uint8_t mech = FBSEC_TYPEWORD_MECH(caps->type_word);
+    printf("  security type word      : 0x%08lX\n",
+           (unsigned long)caps->type_word);
+    printf("    profile               : %u (%s)\n",
+           (unsigned)FBSEC_TYPEWORD_PROFILE(caps->type_word),
+           profile_name(FBSEC_TYPEWORD_PROFILE(caps->type_word)));
+    printf("    capability level      : C%u\n",
+           (unsigned)FBSEC_TYPEWORD_LEVEL(caps->type_word));
+    printf("    restore depth         : %u\n",
+           (unsigned)FBSEC_TYPEWORD_RESTORE(caps->type_word));
+    printf("    mechanisms            : AEAD %s, RPK %s, X509 %s\n",
+           ((mech & FBSEC_MECH_AEAD) != 0u) ? "yes" : "no",
+           ((mech & FBSEC_MECH_RPK)  != 0u) ? "yes" : "no",
+           ((mech & FBSEC_MECH_X509) != 0u) ? "yes" : "no");
+    printf("    suite generation      : %u\n",
+           (unsigned)FBSEC_TYPEWORD_SUITE(caps->type_word));
+  }
+  if (caps->highest_sub >= 0x02u) {
+    printf("  session-protocol bitmap : 0x%08lX (signed-FBsec %s)\n",
+           (unsigned long)caps->session_proto,
+           fbsec_caps_supports_signed_fbsec(caps) ? "yes" : "no");
+  }
+  if (caps->highest_sub >= 0x03u) {
+    printf("  AEAD / tag length       : 0x%08lX (%s, tag %u bytes)\n",
+           (unsigned long)caps->aead_and_tag,
+           aead_bitmap_name((uint8_t)(caps->aead_and_tag & 0x00FFu)),
+           (unsigned)((caps->aead_and_tag >> 8) & 0x00FFu));
+  }
+  if (caps->highest_sub >= 0x04u) {
+    printf("  RPK algorithm id        : %u (%s)\n",
+           (unsigned)caps->rpk_alg, fbsec_caps_has_ed25519(caps) ? "Ed25519" : "none");
+  }
+  if (caps->highest_sub >= 0x05u) {
+    printf("  identity flags          : 0x%02X (IDevID %s, LDevID %s, X509 %s)\n",
+           (unsigned)caps->id_flags,
+           ((caps->id_flags & FBSEC_DESC_ID_IDEVID) != 0u) ? "yes" : "no",
+           ((caps->id_flags & FBSEC_DESC_ID_LDEVID) != 0u) ? "yes" : "no",
+           ((caps->id_flags & FBSEC_DESC_ID_X509)   != 0u) ? "yes" : "no");
+  }
+  if (caps->highest_sub >= 0x06u) {
+    printf("  handover model          : 0x%02X (TOFU %s, token %s, voucher %s)\n",
+           (unsigned)caps->handover_model,
+           ((caps->handover_model & FBSEC_DESC_HANDOVER_TOFU)    != 0u) ? "yes" : "no",
+           ((caps->handover_model & FBSEC_DESC_HANDOVER_TOKEN)   != 0u) ? "yes" : "no",
+           ((caps->handover_model & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) ? "yes" : "no");
+  }
+  if (caps->highest_sub >= 0x07u) {
+    printf("  mfg-specific capabilities: 0x%08lX\n",
+           (unsigned long)caps->mfg_caps);
+  }
+}
+
+static int run_descriptor_command(int argc, char **argv) {
+  uint32_t target = 0u;
+  if (fbsec_client_cli_parse_u32(argv[2], &target) != 0
+      || target == 0u || target > FBSEC_CO_FD_NODE_ID_MAX) {
+    fprintf(stderr, EXEC_NAME ": invalid target node '%s'\n", argv[2]);
+    return 1;
+  }
+
+  memset(&g_cfg, 0, sizeof g_cfg);
+  g_cfg.common.timeout_ms = 1000u;
+  g_cfg.node_id = (uint8_t)DEFAULT_NODE_ID;
+  memcpy(g_cfg.bus_host, DEFAULT_BUS_HOST, sizeof DEFAULT_BUS_HOST);
+  g_cfg.bus_port = DEFAULT_BUS_PORT;
+  memcpy(g_cfg.name, DEFAULT_NAME, sizeof DEFAULT_NAME);
+  for (int i = 3; i < argc; i++) {
+    if (strcmp(argv[i], "--bus") == 0 && (i + 1) < argc) { (void)parse_bus_arg(argv[++i]); }
+    else if (strcmp(argv[i], "--node") == 0 && (i + 1) < argc) {
+      uint32_t v; if (fbsec_client_cli_parse_u32(argv[++i], &v) == 0) g_cfg.node_id = (uint8_t)v;
+    }
+  }
+  g_my_dev = (uint16_t)g_cfg.node_id;
+
+  fbsec_client_cli_print_banner(BANNER_NAME, VERSION_STR, VERSION_DATE_STR);
+  if (fbsec_co_fd_carrier_global_init() != FBSEC_CO_FD_CARRIER_OK) {
+    fprintf(stderr, EXEC_NAME ": WSAStartup failed\n"); return 1;
+  }
+  fbsec_co_fd_carrier_init(&g_carrier);
+  if (bus_connect() != 0) { fbsec_co_fd_carrier_global_shutdown(); return 1; }
+  if (send_announce() != 0) {
+    fbsec_co_fd_carrier_close(&g_carrier); fbsec_co_fd_carrier_global_shutdown(); return 1;
+  }
+
+  int rc = 1;
+  uint32_t timeout = g_cfg.common.timeout_ms;
+  if (strcmp(argv[1], "caps") == 0) {
+    fbsec_caps_t caps;
+    int r = fbsec_client_read_caps(&g_transport, (uint16_t)target, timeout, &caps);
+    if (r == 0) {
+      print_caps(target, &caps);
+      rc = 0;
+    } else {
+      fprintf(stderr, EXEC_NAME ": read capabilities failed (%d)\n", r);
+    }
+  }
+#if FBSEC_FEATURE_ASYM
+  else { /* commission */
+    fbsec_pubkey_t ldev;
+    int r1, r2 = 0, r3, r4;
+    printf("commissioning node %u (manufacturer-to-integrator handover):\n", (unsigned)target);
+    r1 = fbsec_commission_verify_genuineness(&g_transport, (uint16_t)target, timeout);
+    printf("  1 verify genuineness    : %s\n", r1 == 0 ? "OK" : "FAIL");
+#if FBSEC_HANDOVER_AUTHORIZED
+    r2 = fbsec_commission_present_voucher(&g_transport, (uint16_t)target, timeout);
+    printf("  2 present voucher       : %s\n", r2 == 0 ? "OK" : "FAIL");
+#endif
+    r3 = fbsec_commission_install_provisioning(&g_transport, (uint16_t)target, timeout);
+    printf("  3 install provisioning  : %s\n", r3 == 0 ? "OK" : "FAIL");
+    r4 = fbsec_commission_generate_ldevid(&g_transport, (uint16_t)target, timeout, &ldev);
+    printf("  4 generate LDevID       : %s\n", r4 == 0 ? "OK" : "FAIL");
+    rc = (r1 || r2 || r3 || r4) ? 1 : 0;
+  }
+#endif /* FBSEC_FEATURE_ASYM */
+
+  fbsec_co_fd_carrier_close(&g_carrier);
+  fbsec_co_fd_carrier_global_shutdown();
+  return rc;
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
@@ -153,6 +330,17 @@ int main(int argc, char **argv) {
   size_t   write_len   = 0;
 
   setvbuf(stdout, NULL, _IONBF, 0);
+
+  /* Variant-local descriptor commands (bypass the shared secure-verb parser).
+     `caps` is always available; `commission` only in asymmetric builds. */
+  if (argc >= 3
+      && (strcmp(argv[1], "caps") == 0
+#if FBSEC_FEATURE_ASYM
+          || strcmp(argv[1], "commission") == 0
+#endif
+         )) {
+    return run_descriptor_command(argc, argv);
+  }
 
   /* Defaults. */
   memset(&g_cfg, 0, sizeof g_cfg);
@@ -467,8 +655,14 @@ static void print_usage(FILE *f) {
   fprintf(f,
     "usage:\n"
     "  " EXEC_NAME " (srd|swr|srdpoll|swrpoll) <target_node> <data_id> [options]\n"
+    "  " EXEC_NAME " caps <target_node> [--bus HOST:PORT] [--node N]\n"
+#if FBSEC_FEATURE_ASYM
+    "  " EXEC_NAME " commission <target_node> [--bus HOST:PORT] [--node N]\n"
+#endif
     "  " EXEC_NAME " --menu [options]\n"
     "  " EXEC_NAME " --help\n"
+    "\n"
+    "caps:  read the unauthenticated capability descriptor (0xC000); no key needed\n"
     "\n"
     "Single-shot positional:\n"
     "  <target_node>  CANopen node id 1..%u (decimal or 0xHEX)\n"
@@ -558,21 +752,42 @@ static int send_announce(void) {
 
 /* ---- Transport vtable: USDO over CAN FD carrier --------------------- */
 
+/** What a round-trip learned from the response PDU. */
+typedef struct {
+  uint8_t  cmd;         /**< response command specifier              */
+  uint8_t  data_type;   /**< 0 when the frame carries no data block  */
+  uint8_t  counter;     /**< segment counter / last-segment length   */
+  uint32_t total_size;  /**< declared size on an initiate response   */
+  uint32_t data_len;    /**< bytes copied into the caller's buffer   */
+} round_trip_result_t;
+
 /**
  * @brief Round-trip one USDO request and decode the matching USDO
  *        response.
  *
  * @param req_frame     pre-encoded request frame (just send + trace).
- * @param target_node   target server node id (also expected in response BUF[0]).
+ * @param target_node_for_trace  target server node id, for the trace row.
  * @param data_id       used only for trace.
  * @param req_body      optional request payload (for TX trace).
  * @param req_len       length of @p req_body.
- * @param expected_cmd  USDO_CMD_DOWNLOAD_RESP or _UPLOAD_RESP; abort frames
- *                      are also accepted regardless.
- * @param resp_data_out (optional) on success, pointer into the recv frame's
- *                      USDO data block; lifetime bounded by this call.
- * @param resp_len_out  (optional) length of resp_data_out.
+ * @param expected_cmd  primary accepted response cmd.
+ * @param alt_cmd       second accepted response cmd, or 0 for none (lets a
+ *                      caller accept e.g. upload_resp OR upload_init_resp).
+ *                      Abort frames are always accepted.
+ * @param expected_node target server node id (must be the response sender).
+ * @param expected_session  session the request carried.
+ * @param match_mux     true to also require index/subindex to match the
+ *                      request; false for segment frames, which carry no
+ *                      multiplexor.
+ * @param want_index    OD index to match when @p match_mux.
+ * @param want_sub      OD subindex to match when @p match_mux.
+ * @param out_buf       receives the response data block.
+ * @param out_buf_size  capacity of @p out_buf.
+ * @param timeout_ms    round-trip deadline.
  * @param abort_out     receives the abort code on FBSEC_SECP_ABORT.
+ * @param res           receives the decoded response summary. Must not be NULL.
+ *
+ * @return FBSEC_SECP_OK, or a transport / protocol / abort status.
  */
 static fbsec_secure_status_t round_trip(const fbsec_co_fd_frame_t *req_frame,
                                         uint16_t target_node_for_trace,
@@ -580,12 +795,16 @@ static fbsec_secure_status_t round_trip(const fbsec_co_fd_frame_t *req_frame,
                                         const uint8_t *req_body,
                                         uint16_t req_len,
                                         uint8_t expected_cmd,
+                                        uint8_t alt_cmd,
                                         uint8_t expected_node,
                                         uint8_t expected_session,
+                                        bool     match_mux,
+                                        uint16_t want_index,
+                                        uint8_t  want_sub,
                                         uint8_t *out_buf, uint32_t out_buf_size,
-                                        uint32_t *len_out,
                                         uint32_t timeout_ms,
-                                        uint32_t *abort_out) {
+                                        fbsec_abort_t *abort_out,
+                                        round_trip_result_t *res) {
   fbsec_client_trace_inc_round();
   fbsec_client_trace_secure_frame(true, g_my_dev, target_node_for_trace,
                                   data_id, req_body, req_len, 0u);
@@ -618,25 +837,24 @@ static fbsec_secure_status_t round_trip(const fbsec_co_fd_frame_t *req_frame,
     if (pdu.dst_node_id != (uint8_t)g_cfg.node_id) continue;
     /* Session must match what we sent (catches cross-talk). */
     if (pdu.session != expected_session) continue;
-    /* Filter by index/sub matching our request. */
-    uint16_t want_index = (uint16_t)((data_id >> 16) & 0xFFFFu);
-    uint8_t  want_sub   = (uint8_t) ((data_id >>  8) & 0xFFu);
-    if (pdu.index != want_index || pdu.subindex != want_sub) continue;
+    /* Filter by index/sub matching our request, where the frame has them.
+       Segment frames carry no multiplexor; (peer, session) binds them. */
+    if (match_mux && pdu.mux_valid
+        && (pdu.index != want_index || pdu.subindex != want_sub)) {
+      continue;
+    }
 
     if (pdu.cmd == FBSEC_CO_FD_USDO_CMD_ABORT) {
-      uint32_t abort_code = 0u;
-      if (pdu.data_len == 4u && pdu.data != NULL) {
-        abort_code = (uint32_t)pdu.data[0]
-                  | ((uint32_t)pdu.data[1] <<  8)
-                  | ((uint32_t)pdu.data[2] << 16)
-                  | ((uint32_t)pdu.data[3] << 24);
-      }
+      /* CiA 1301 Table 32: the abort reason is the single `ac` byte the
+         codec lifted out of offset 6. */
+      fbsec_abort_t abort_code = pdu.abort_code;
       fbsec_client_trace_secure_frame(false, target_node_for_trace, g_my_dev,
                                       data_id, NULL, 0u, abort_code);
       if (abort_out != NULL) *abort_out = abort_code;
       return FBSEC_SECP_ABORT;
     }
-    if (pdu.cmd != expected_cmd) {
+    if ((pdu.cmd != expected_cmd)
+        && ((alt_cmd == 0u) || (pdu.cmd != alt_cmd))) {
       /* Wrong response type (e.g. download_resp when we expected upload_resp). */
       return FBSEC_SECP_PROTOCOL;
     }
@@ -645,10 +863,86 @@ static fbsec_secure_status_t round_trip(const fbsec_co_fd_frame_t *req_frame,
                                     data_id, pdu.data, pdu.data_len, 0u);
     if (pdu.data_len > out_buf_size) return FBSEC_SECP_BUFSIZE;
     if (pdu.data_len > 0u) memcpy(out_buf, pdu.data, pdu.data_len);
-    if (len_out != NULL) *len_out = pdu.data_len;
+    res->cmd        = pdu.cmd;
+    res->data_type  = pdu.data_type;
+    res->counter    = pdu.counter;
+    res->total_size = pdu.total_size;
+    res->data_len   = pdu.data_len;
     return FBSEC_SECP_OK;
   }
 }
+
+#if FBSEC_FEATURE_ASYM
+/**
+ * @brief Pull a large result with a standard USDO segmented upload.
+ *
+ * Entered after a request was answered with an upload-initiate response
+ * (cmd 0x32) declaring @p total bytes. Issues upload-segment requests
+ * (0x13) with an incrementing counter until the server answers with the
+ * upload-end response (0x34).
+ *
+ * @param device_id    trace-only device id of the peer.
+ * @param data_id      trace-only data id.
+ * @param target_node  server node id.
+ * @param session      session of the open transfer.
+ * @param total        declared result length in bytes.
+ * @param buf          destination buffer.
+ * @param buf_size     capacity of @p buf.
+ * @param timeout_ms   per-segment deadline.
+ * @param abort_out    receives the abort code on FBSEC_SECP_ABORT.
+ * @param len_out      receives the assembled body length. Must not be NULL.
+ *
+ * @return FBSEC_SECP_OK, or a transport / protocol / abort status.
+ */
+static fbsec_secure_status_t seg_upload_pull(uint16_t device_id,
+                                             uint32_t data_id,
+                                             uint8_t  target_node,
+                                             uint8_t  session,
+                                             uint32_t total,
+                                             uint8_t *buf,
+                                             uint32_t buf_size,
+                                             uint32_t timeout_ms,
+                                             fbsec_abort_t *abort_out,
+                                             uint32_t *len_out) {
+  uint8_t  chunk[FBSEC_CO_FD_PAYLOAD_MAX];
+  uint32_t have    = 0u;
+  uint8_t  counter = 0u;
+
+  if (total > buf_size) return FBSEC_SECP_BUFSIZE;
+
+  for (;;) {
+    fbsec_co_fd_frame_t seg;
+    round_trip_result_t res;
+    if (!fbsec_co_fd_usdo_encode_upload_seg_req(&seg, g_cfg.node_id, target_node,
+                                                session, counter)) {
+      return FBSEC_SECP_PROTOCOL;
+    }
+    fbsec_secure_status_t rc =
+      round_trip(&seg, device_id, data_id, NULL, 0u,
+                 FBSEC_CO_FD_USDO_CMD_UPLOAD_SEG_RESP,
+                 FBSEC_CO_FD_USDO_CMD_UPLOAD_END_RESP,
+                 target_node, session, /*match_mux=*/false, 0u, 0u,
+                 chunk, (uint32_t)sizeof chunk, timeout_ms, abort_out, &res);
+    if (rc != FBSEC_SECP_OK) return rc;
+
+    if ((res.cmd == FBSEC_CO_FD_USDO_CMD_UPLOAD_SEG_RESP)
+        && (res.counter != counter)) {
+      return FBSEC_SECP_PROTOCOL;
+    }
+    if ((have + res.data_len) > total) return FBSEC_SECP_PROTOCOL;
+    if (res.data_len > 0u) memcpy(&buf[have], chunk, res.data_len);
+    have += res.data_len;
+
+    if (res.cmd == FBSEC_CO_FD_USDO_CMD_UPLOAD_END_RESP) break;
+    if (counter == 0xFFu) return FBSEC_SECP_PROTOCOL;
+    counter++;
+  }
+
+  if (have != total) return FBSEC_SECP_PROTOCOL;
+  *len_out = have;
+  return FBSEC_SECP_OK;
+}
+#endif /* FBSEC_FEATURE_ASYM */
 
 /**
  * @brief transport_read: secure-tunnel read-pattern half-round-trip.
@@ -670,7 +964,7 @@ static fbsec_secure_status_t transport_read(
   uint32_t buf_size,
   uint32_t timeout_ms,
   uint32_t *len_out,
-  uint32_t *abort_out)
+  fbsec_abort_t *abort_out)
 {
   (void)ctx;
 
@@ -683,6 +977,7 @@ static fbsec_secure_status_t transport_read(
   }
 
   fbsec_co_fd_frame_t req;
+  round_trip_result_t res;
   bool ok;
   uint8_t expected_cmd;
   uint8_t session = next_session();
@@ -700,11 +995,34 @@ static fbsec_secure_status_t transport_read(
   }
   if (!ok) return FBSEC_SECP_PROTOCOL;
 
-  return round_trip(&req, device_id, data_id,
-                    req_body, req_len,
-                    expected_cmd, target_node, session,
-                    buf, buf_size, len_out,
-                    timeout_ms, abort_out);
+  /* A result too large for one expedited data block comes back as an
+     upload-initiate response (cmd 0x32) instead; the caller then runs the
+     standard segmented upload. Only the asymmetric layer produces such
+     bodies, so a symmetric build never accepts the alternative. */
+#if FBSEC_FEATURE_ASYM
+  uint8_t alt_cmd = FBSEC_CO_FD_USDO_CMD_UPLOAD_INIT_RESP;
+#else
+  uint8_t alt_cmd = 0u;
+#endif
+
+  fbsec_secure_status_t rc = round_trip(&req, device_id, data_id,
+                                        req_body, req_len,
+                                        expected_cmd, alt_cmd,
+                                        target_node, session,
+                                        /*match_mux=*/true, want_index, want_sub,
+                                        buf, buf_size,
+                                        timeout_ms, abort_out, &res);
+  if (rc != FBSEC_SECP_OK) return rc;
+
+#if FBSEC_FEATURE_ASYM
+  if (res.cmd == FBSEC_CO_FD_USDO_CMD_UPLOAD_INIT_RESP) {
+    return seg_upload_pull(device_id, data_id, target_node, session,
+                           res.total_size, buf, buf_size,
+                           timeout_ms, abort_out, len_out);
+  }
+#endif
+  if (len_out != NULL) *len_out = res.data_len;
+  return FBSEC_SECP_OK;
 }
 
 /**
@@ -720,10 +1038,9 @@ static fbsec_secure_status_t transport_write(
   const uint8_t *buf,
   uint32_t len,
   uint32_t timeout_ms,
-  uint32_t *abort_out)
+  fbsec_abort_t *abort_out)
 {
   (void)ctx;
-  if (len > FBSEC_CO_FD_USDO_DATA_MAX) return FBSEC_SECP_BUFSIZE;
 
   uint16_t want_index = (uint16_t)((data_id >> 16) & 0xFFFFu);
   uint8_t  want_sub   = (uint8_t) ((data_id >>  8) & 0xFFu);
@@ -734,21 +1051,86 @@ static fbsec_secure_status_t transport_write(
   }
 
   fbsec_co_fd_frame_t req;
-  uint8_t session = next_session();
-  if (!fbsec_co_fd_usdo_encode_download_req(&req, g_cfg.node_id, target_node,
-                                            session, want_index, want_sub,
-                                            buf, (uint16_t)len)) {
-    return FBSEC_SECP_PROTOCOL;
+  round_trip_result_t res;
+  uint8_t  session;
+  uint8_t  scratch[FBSEC_CO_FD_PAYLOAD_MAX];
+
+  if (len <= FBSEC_CO_FD_USDO_DATA_MAX) {
+    session = next_session();
+    if (!fbsec_co_fd_usdo_encode_download_req(&req, g_cfg.node_id, target_node,
+                                              session, want_index, want_sub,
+                                              buf, (uint16_t)len)) {
+      return FBSEC_SECP_PROTOCOL;
+    }
+    /* The dispatch reply for a download_req carrying a Pass-2 SWR is empty. */
+    return round_trip(&req, device_id, data_id, buf, (uint16_t)len,
+                      FBSEC_CO_FD_USDO_CMD_DOWNLOAD_RESP, 0u,
+                      target_node, session,
+                      /*match_mux=*/true, want_index, want_sub,
+                      scratch, (uint32_t)sizeof scratch,
+                      timeout_ms, abort_out, &res);
   }
 
-  /* The dispatch reply for a download_req carrying a Pass-2 SWR is empty. */
-  uint8_t  scratch[1];
-  uint32_t scratch_len = 0u;
-  return round_trip(&req, device_id, data_id,
-                    buf, (uint16_t)len,
-                    FBSEC_CO_FD_USDO_CMD_DOWNLOAD_RESP, target_node, session,
-                    scratch, sizeof scratch, &scratch_len,
-                    timeout_ms, abort_out);
+#if FBSEC_FEATURE_ASYM
+  /* Large request (signed write, voucher, provisioning install): a standard
+     USDO segmented download - initiate, full 60-byte segments, end segment.
+     The server reassembles and dispatches when the end segment lands. */
+  {
+    uint32_t offset  = 0u;
+    uint8_t  counter = 0u;
+
+    if (len > FBSEC_CO_FD_USDO_SEG_BODY_MAX) return FBSEC_SECP_BUFSIZE;
+    session = next_session();
+
+    if (!fbsec_co_fd_usdo_encode_download_init_req(&req, g_cfg.node_id, target_node,
+                                                   session, want_index, want_sub,
+                                                   len)) {
+      return FBSEC_SECP_PROTOCOL;
+    }
+    fbsec_secure_status_t rc =
+      round_trip(&req, device_id, data_id, NULL, 0u,
+                 FBSEC_CO_FD_USDO_CMD_DOWNLOAD_INIT_RESP, 0u,
+                 target_node, session,
+                 /*match_mux=*/true, want_index, want_sub,
+                 scratch, (uint32_t)sizeof scratch,
+                 timeout_ms, abort_out, &res);
+    if (rc != FBSEC_SECP_OK) return rc;
+
+    while ((len - offset) > (uint32_t)FBSEC_CO_FD_USDO_SEG_DATA_MAX) {
+      if (!fbsec_co_fd_usdo_encode_download_seg_req(&req, g_cfg.node_id, target_node,
+                                                    session, counter,
+                                                    &buf[offset])) {
+        return FBSEC_SECP_PROTOCOL;
+      }
+      rc = round_trip(&req, device_id, data_id, &buf[offset],
+                      FBSEC_CO_FD_USDO_SEG_DATA_MAX,
+                      FBSEC_CO_FD_USDO_CMD_DOWNLOAD_SEG_RESP, 0u,
+                      target_node, session,
+                      /*match_mux=*/false, 0u, 0u,
+                      scratch, (uint32_t)sizeof scratch,
+                      timeout_ms, abort_out, &res);
+      if (rc != FBSEC_SECP_OK) return rc;
+      if (res.counter != counter) return FBSEC_SECP_PROTOCOL;
+      offset = offset + FBSEC_CO_FD_USDO_SEG_DATA_MAX;
+      counter++;
+    }
+
+    if (!fbsec_co_fd_usdo_encode_download_end_req(&req, g_cfg.node_id, target_node,
+                                                  session, &buf[offset],
+                                                  (uint16_t)(len - offset))) {
+      return FBSEC_SECP_PROTOCOL;
+    }
+    return round_trip(&req, device_id, data_id, &buf[offset],
+                      (uint16_t)(len - offset),
+                      FBSEC_CO_FD_USDO_CMD_DOWNLOAD_END_RESP, 0u,
+                      target_node, session,
+                      /*match_mux=*/false, 0u, 0u,
+                      scratch, (uint32_t)sizeof scratch,
+                      timeout_ms, abort_out, &res);
+  }
+#else
+  return FBSEC_SECP_BUFSIZE;
+#endif
 }
 
 /* EOF */

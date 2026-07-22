@@ -5,7 +5,7 @@
  * @brief   SOFA server-side secure object dictionary, public API.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 03-MAY-2026
+ * @version V1.2 of 22-JUL-2026
  *
  * Server-side counterpart to fbsec_secure_proto: a tiny registry of
  * (data_id) -> (access flags, key_id, data_len) records, plus the
@@ -30,7 +30,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "fbsec_abort.h"
 #include "fbsec_aead.h"
+#if FBSEC_FEATURE_ASYM
+#include "fbsec_asym.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,14 +88,10 @@ typedef struct fbsec_sod_entry_t {
   uint16_t data_len;
 } fbsec_sod_entry_t;
 
-/* ---- Standard demo abort codes (CiA-301 derived, application-defined) - */
-
-#define FBSEC_SOD_ABORT_TYPEMISMATCH  0x06070010uL
-#define FBSEC_SOD_ABORT_UNSUPPORTED   0x06010000uL
-#define FBSEC_SOD_ABORT_LOCKED        0x08000022uL
-#define FBSEC_SOD_ABORT_TRANSFER      0x08000020uL
-#define FBSEC_SOD_ABORT_TAGFAIL       0x05030000uL
-#define FBSEC_SOD_ABORT_GENERAL       0x08000000uL
+/* ---- Abort codes ------------------------------------------------------ */
+/* Single-byte CiA 1301 Table 31 codes plus the SOFA C0h..CFh block; see
+   fbsec_abort.h. The former 32-bit FBSEC_SOD_ABORT_* set (classical CiA
+   301 SDO abort codes) is gone - it was never valid on a USDO bus. */
 
 /* ---- Public API ------------------------------------------------------- */
 
@@ -118,15 +118,38 @@ const fbsec_sod_entry_t *fbsec_sod_find_entry(uint32_t data_id);
 /**
  * @brief Install a session key in slot @p key_id (1..FBSEC_SOD_KEY_SLOTS).
  *
+ * The non-secret key id / version reported by C011h defaults to the slot
+ * number. Use @ref fbsec_sod_set_key_ex to set it explicitly.
+ *
  * @retval true  key installed.
  * @retval false invalid key_id, NULL key, or slot already populated.
  */
 bool fbsec_sod_set_key(uint8_t key_id, const uint8_t key[FBSEC_AEAD_KEY_SIZE]);
 
 /**
+ * @brief Install a session key with an explicit non-secret id / version.
+ *
+ * As @ref fbsec_sod_set_key, but records @p id_value as the key id
+ * reported by C011h, independent of the slot's role number.
+ *
+ * @retval true  key installed.
+ * @retval false invalid key_id, NULL key, or slot already populated.
+ */
+bool fbsec_sod_set_key_ex(uint8_t key_id, const uint8_t key[FBSEC_AEAD_KEY_SIZE],
+                          uint32_t id_value);
+
+/**
  * @brief Check whether a key slot has been populated.
  */
 bool fbsec_sod_has_key(uint8_t key_id);
+
+/**
+ * @brief Non-secret key id / version of a slot, for C011h.
+ *
+ * @return the id set at install (or the slot number by default), or 0 if
+ *         the slot is empty or @p key_id is out of range.
+ */
+uint32_t fbsec_sod_get_key_id_value(uint8_t key_id);
 
 /* ---- Dispatch entry points ------------------------------------------- */
 
@@ -139,22 +162,23 @@ bool fbsec_sod_has_key(uint8_t key_id);
  * and returns its length plus a status that tells the caller what to
  * send back inside the demo response envelope.
  *
- * Reply envelope: 4-byte LE status header + reply payload bytes.
- * - On FBSEC_SOD_OK:    status = 0, payload = (filled by this fn).
- * - On FBSEC_SOD_ABORT: status = (out_abort), payload empty.
- * - On FBSEC_SOD_DEFER: status = 0, payload empty (challenge accepted,
- *                                            response pending).
+ * The variant wraps the outcome in its own envelope:
+ * - On FBSEC_SOD_OK:    normal response carrying @p reply.
+ * - On FBSEC_SOD_ABORT: an abort carrying the one-byte @p out_abort
+ *                       code, no payload.
+ * - On FBSEC_SOD_DEFER: empty positive ACK (challenge accepted,
+ *                       response pending).
  * - On FBSEC_SOD_NOT_HANDLED: caller falls back to plain dispatch.
  *
  * @param client_dev    Source device_id of the request.
  * @param data_id       Application data_id.
  * @param req           Request bytes (the transport frame's payload).
  * @param req_len       Request length.
- * @param reply         Buffer for reply payload (excludes the 4-byte
- *                      status header, caller prepends that).
+ * @param reply         Buffer for the reply payload; the variant adds
+ *                      its own envelope around it.
  * @param reply_max     Capacity of @p reply.
  * @param reply_len     Receives the reply payload length on OK / DEFER.
- * @param out_abort     Receives the abort code on ABORT.
+ * @param out_abort     Receives the CiA 1301 abort code on ABORT.
  */
 fbsec_sod_status_t fbsec_sod_dispatch(
   uint16_t       client_dev,
@@ -164,7 +188,7 @@ fbsec_sod_status_t fbsec_sod_dispatch(
   uint8_t       *reply,
   uint16_t       reply_max,
   uint16_t      *reply_len,
-  uint32_t      *out_abort);
+  fbsec_abort_t *out_abort);
 
 /* ---- Host port hooks ------------------------------------------------- */
 
@@ -193,7 +217,7 @@ bool fbsec_sod_port_random(uint8_t *buf, uint16_t len);
  * state, region map, factory mode, etc.). The keyid is not part of
  * this decision; for per-key role policy use @ref
  * fbsec_sod_port_role_allowed. Returns false -> abort with
- * FBSEC_SOD_ABORT_LOCKED.
+ * FBSEC_ABORT_DEVICE_STATE (62h).
  */
 bool fbsec_sod_port_access_allowed(fbsec_sod_op_t op, uint32_t data_id);
 
@@ -207,7 +231,7 @@ bool fbsec_sod_port_access_allowed(fbsec_sod_op_t op, uint32_t data_id);
  * role, not the wire flags. The hook is called at every point the
  * keyid is known: read challenge arm, cyclic write arm, single-shot
  * write Pass 2 (before AEAD verify), and on each cyclic poll. Returns
- * false -> abort with FBSEC_SOD_ABORT_UNSUPPORTED.
+ * false -> abort with FBSEC_ABORT_ROLE_DENIED (C3h).
  *
  * Default policy in the reference server: Provisioning Session Key
  * (1) and Integrator Session Key (2) can read and write; Operator
@@ -224,20 +248,39 @@ bool fbsec_sod_port_role_allowed(fbsec_sod_op_t op,
  * @param data_id  Entry being read.
  * @param dst      Destination buffer (entry->data_len bytes).
  * @param len      In: max size (= entry->data_len). Out: actual.
- * @return         0 on success or an abort code on application refusal.
+ * @return         FBSEC_ABORT_NONE on success, or an abort code on
+ *                 application refusal.
  */
-uint32_t fbsec_sod_port_read_before(uint32_t data_id,
-                                  uint8_t *dst,
-                                  uint16_t *len);
+fbsec_abort_t fbsec_sod_port_read_before(uint32_t data_id,
+                                         uint8_t *dst,
+                                         uint16_t *len);
 
 /**
  * @brief Apply a verified SECURE_WO plaintext.
  *
- * @return 0 on commit success or an abort code.
+ * @return FBSEC_ABORT_NONE on commit success, or an abort code.
  */
-uint32_t fbsec_sod_port_write_after(uint32_t data_id,
-                                  const uint8_t *src,
-                                  uint16_t len);
+fbsec_abort_t fbsec_sod_port_write_after(uint32_t data_id,
+                                         const uint8_t *src,
+                                         uint16_t len);
+
+#if FBSEC_ASYM_SIGNED_FBSEC
+/**
+ * @brief Sign @p msg with this device's runtime identity (for signed-FBsec
+ *        server-to-client authentication). Host-implemented.
+ * @retval true  @p sig filled with a 64-byte Ed25519 signature.
+ */
+bool fbsec_sod_port_sign(uint8_t role_dir, const uint8_t *msg, uint16_t len,
+                         uint8_t sig[FBSEC_ASYM_SIG_SIZE]);
+
+/**
+ * @brief Fetch the runtime-identity public key of peer @p client_dev
+ *        (to verify a signed-FBsec client-to-server signature).
+ * @retval true  @p pub filled; false if the peer identity is unknown.
+ */
+bool fbsec_sod_port_peer_pubkey(uint16_t client_dev,
+                                uint8_t pub[FBSEC_ASYM_PUBKEY_SIZE]);
+#endif /* FBSEC_ASYM_SIGNED_FBSEC */
 
 #ifdef __cplusplus
 }

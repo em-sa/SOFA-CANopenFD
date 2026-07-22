@@ -5,7 +5,7 @@
  * @brief   SOFA client_common, key store + RNG + KDF, implementation.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 22-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -251,33 +251,48 @@ int fbsec_client_keys_load_file(const char *path) {
   unsigned loaded_count = 0;
   bool     any_error    = false;
   while (fgets(line, sizeof line, f) != NULL) {
-    char *p = line;
-    while (*p == ' ' || *p == '\t') {
-      ++p;
-    }
-    if (*p == '#' || *p == '\0' || *p == '\n' || *p == '\r') {
-      continue;
+    char         *hash;
+    char         *t_kid;
+    char         *t_label;
+    char         *t_key;
+    char         *after_kid;
+    unsigned long kid;
+    size_t        klen = 0;
+
+    /* Strip a trailing comment before tokenizing. */
+    hash = strchr(line, '#');
+    if (hash != NULL) {
+      *hash = '\0';
     }
 
-    char *after_kid = p;
-    unsigned long kid = strtoul(p, &after_kid, 0);
-    if (after_kid == p || kid == 0u || kid > FBSEC_AEAD_KEYID_MAX) {
+    /* Row: <keyid> <label> <hex-key> [<u32-id>]. The optional id column is
+       ignored client-side (it is only meaningful to the server's C011h). */
+    t_kid = strtok(line, " \t\r\n");
+    if (t_kid == NULL) {
+      continue;                             /* blank / comment-only line */
+    }
+    after_kid = t_kid;
+    kid = strtoul(t_kid, &after_kid, 0);
+    if (after_kid == t_kid || *after_kid != '\0'
+        || kid == 0u || kid > FBSEC_AEAD_KEYID_MAX) {
       fprintf(stderr,
               "client_common: key-file row has out-of-range or missing keyid (1..%u)\n",
               (unsigned)FBSEC_AEAD_KEYID_MAX);
       any_error = true;
       continue;
     }
-    p = after_kid;
-    while (*p == ' ' || *p == '\t') {
-      ++p;
+
+    t_label = strtok(NULL, " \t\r\n");
+    t_key   = strtok(NULL, " \t\r\n");
+    if (t_label == NULL || t_key == NULL) {
+      fprintf(stderr,
+              "client_common: key-file row for keyid %u missing label or key\n",
+              (unsigned)kid);
+      any_error = true;
+      continue;
     }
-    /* Skip the label token. */
-    while (*p != '\0' && *p != ' ' && *p != '\t') {
-      ++p;
-    }
-    size_t klen = 0;
-    if (parse_hex_to_buf(p, g_session_keys[kid],
+
+    if (parse_hex_to_buf(t_key, g_session_keys[kid],
                          FBSEC_AEAD_KEY_SIZE, &klen) != 0
         || klen != FBSEC_AEAD_KEY_SIZE) {
       fprintf(stderr,

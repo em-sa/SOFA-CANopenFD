@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, per-request trace formatter, impl.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 20-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -211,7 +211,7 @@ void fbsec_server_trace_request(uint16_t       src_dev,
                                 uint16_t       dst_dev,
                                 uint32_t       data_id,
                                 const char    *verb,
-                                uint32_t       status,
+                                fbsec_abort_t  status,
                                 const uint8_t *req_payload,
                                 uint16_t       req_len,
                                 const uint8_t *out_data,
@@ -240,7 +240,7 @@ void fbsec_server_trace_request(uint16_t       src_dev,
       plain = fbsec_server_hooks_secure_ro();
       plain_len = FBSEC_SERVER_ENTRY_SECURE_LEN;
     }
-    plain_on_tx = (plain != NULL && status == 0u);
+    plain_on_tx = (plain != NULL && status == FBSEC_ABORT_NONE);
   } else if (strcmp(verb, "SWR2") == 0) {
     if      (data_id == FBSEC_SERVER_ENTRY_WR_DATA_ID)  {
       plain = fbsec_server_hooks_value();
@@ -249,7 +249,7 @@ void fbsec_server_trace_request(uint16_t       src_dev,
       plain = fbsec_server_hooks_secure_wo();
       plain_len = FBSEC_SERVER_ENTRY_SECURE_LEN;
     }
-    plain_on_rx = (plain != NULL && status == 0u);
+    plain_on_rx = (plain != NULL && status == FBSEC_ABORT_NONE);
   }
 
   /* Compact 24-bit data_id render: index||subindex (the trailing reserved
@@ -282,8 +282,8 @@ void fbsec_server_trace_request(uint16_t       src_dev,
          COL_RSP, ts, verb,
          (unsigned)(dst_dev & 0xFFu), (unsigned)(src_dev & 0xFFu),
          id24, COL_END);
-  if (status != 0u) {
-    printf(" %sabort 0x%08X%s", COL_ABORT, (unsigned)status, COL_END);
+  if (status != FBSEC_ABORT_NONE) {
+    printf(" %sabort 0x%02X%s", COL_ABORT, (unsigned)status, COL_END);
   } else if (out_data != NULL && out_len > 0) {
     log_tx_segments(entry, out_data, (uint16_t)out_len);
   } else {

@@ -5,7 +5,7 @@
  * @brief   SOFA client_common, interactive menu mode, implementation.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.2 of 22-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -29,6 +29,7 @@
 
 #include "fbsec_aead.h"
 #include "fbsec_secure_proto.h"
+#include "fbsec_descriptor.h"
 
 /* ---- Menu constants -------------------------------------------------- */
 
@@ -37,7 +38,7 @@
 #define MENU_WR_DATA_ID     0x20100000u
 #define MENU_RD_DATA_ID     0x20200000u
 #define MENU_ID_DATA_ID     0xC0180000u
-#define MENU_BIN_DATA_ID    0xC0160000u
+#define MENU_BIN_DATA_ID    0x20160000u
 #define MENU_BIN_LEN        16u
 /* 24-bit display form: drop the reserved low byte. */
 #define MENU_DATA_ID24(d)   ((unsigned)(((d) >> 8) & 0xFFFFFFu))
@@ -245,7 +246,7 @@ static int poll_read_loop(const fbsec_secure_transport_t *transport,
      established as a side effect. */
   uint8_t  iter1_buf[FBSEC_AEAD_MAX_PROTECTED];
   uint32_t iter1_len = 0u;
-  uint32_t abort_code = 0u;
+  fbsec_abort_t abort_code = 0u;
   fbsec_client_keys_clear_observed_salt();
   fbsec_client_trace_set_verb("srd");
   fbsec_client_trace_reset_round();
@@ -260,9 +261,10 @@ static int poll_read_loop(const fbsec_secure_transport_t *transport,
   fbsec_client_trace_set_verb("");
   if (rc != FBSEC_SECP_OK) {
     if (rc == FBSEC_SECP_ABORT) {
-      printf("%sarmed-read FAIL%s %sabort 0x%08X%s\n",
+      printf("%sarmed-read FAIL%s %sabort 0x%02X (%s)%s\n",
              fbsec_client_trace_col_rsp(), fbsec_client_trace_col_end(),
              fbsec_client_trace_col_abort(), (unsigned)abort_code,
+             fbsec_client_abort_name(abort_code),
              fbsec_client_trace_col_end());
     } else if (rc == FBSEC_SECP_TAG) {
       printf("%sarmed-read FAIL%s %stag verify failed%s\n",
@@ -318,8 +320,9 @@ static int poll_read_loop(const fbsec_secure_transport_t *transport,
       printf("\n");
       ++ok;
     } else if (rc == FBSEC_SECP_ABORT) {
-      printf(" %sFAIL  abort 0x%08X%s\n",
+      printf(" %sFAIL  abort 0x%02X (%s)%s\n",
              fbsec_client_trace_col_abort(), (unsigned)abort_code,
+             fbsec_client_abort_name(abort_code),
              fbsec_client_trace_col_end());
       ++abort_n;
     } else {
@@ -368,7 +371,7 @@ static int poll_write_loop(const fbsec_secure_transport_t *transport,
     (uint8_t)((1u >>  8) & 0xFFu),
     (uint8_t)( 1u        & 0xFFu),
   };
-  uint32_t abort_code = 0u;
+  fbsec_abort_t abort_code = 0u;
   fbsec_client_keys_clear_observed_salt();
   fbsec_client_trace_set_verb("swr");
   fbsec_client_trace_reset_round();
@@ -382,9 +385,10 @@ static int poll_write_loop(const fbsec_secure_transport_t *transport,
   fbsec_client_trace_set_verb("");
   if (rc != FBSEC_SECP_OK) {
     if (rc == FBSEC_SECP_ABORT) {
-      printf("%sarmed-write FAIL%s %sabort 0x%08X%s\n",
+      printf("%sarmed-write FAIL%s %sabort 0x%02X (%s)%s\n",
              fbsec_client_trace_col_rsp(), fbsec_client_trace_col_end(),
              fbsec_client_trace_col_abort(), (unsigned)abort_code,
+             fbsec_client_abort_name(abort_code),
              fbsec_client_trace_col_end());
     } else if (rc == FBSEC_SECP_TAG) {
       printf("%sarmed-write FAIL%s %stag verify failed%s\n",
@@ -443,8 +447,9 @@ static int poll_write_loop(const fbsec_secure_transport_t *transport,
       printf("\n");
       ++ok;
     } else if (rc == FBSEC_SECP_ABORT) {
-      printf(" %sFAIL  abort 0x%08X%s\n",
+      printf(" %sFAIL  abort 0x%02X (%s)%s\n",
              fbsec_client_trace_col_abort(), (unsigned)abort_code,
+             fbsec_client_abort_name(abort_code),
              fbsec_client_trace_col_end());
       ++abort_n;
     } else {
@@ -466,6 +471,286 @@ static int poll_write_loop(const fbsec_secure_transport_t *transport,
          ok, (unsigned)MENU_POLL_COUNT, abort_n, fail);
   memset(&sess, 0, sizeof sess);
   return 0;
+}
+
+/* ---- Security-parameter scan (unsecured cold reads) ---------------- */
+
+/* Little-endian U32 read (C000h/C001h/C011h are served little-endian). */
+static uint32_t rd_u32le(const uint8_t *b, uint32_t len) {
+  uint32_t v = 0u, i;
+  for (i = 0u; (i < len) && (i < 4u); ++i) {
+    v |= (uint32_t)b[i] << (8u * i);
+  }
+  return v;
+}
+
+/* Big-endian U32 read (object 1018h is served as authored, big-endian). */
+static uint32_t rd_u32be(const uint8_t *b, uint32_t len) {
+  uint32_t v = 0u, i;
+  for (i = 0u; (i < len) && (i < 4u); ++i) {
+    v = (v << 8u) | (uint32_t)b[i];
+  }
+  return v;
+}
+
+static const char *menu_profile_name(uint8_t p) {
+  switch (p) {
+    case FBSEC_PROFILE_CUSTOM:       return "Custom";
+    case FBSEC_PROFILE_OPEN:         return "Open";
+    case FBSEC_PROFILE_CLAIMED:      return "Claimed";
+    case FBSEC_PROFILE_AUTHORIZED:   return "Authorized";
+    case FBSEC_PROFILE_IDENTIFIED:   return "Identified";
+    case FBSEC_PROFILE_CONFIDENTIAL: return "Confidential";
+    default:                         return "unknown";
+  }
+}
+
+static const char *menu_aead_name(uint8_t bitmap) {
+  if ((bitmap & FBSEC_DESC_AEAD_AES128_GCM) != 0u) return "AES-128-GCM";
+  if ((bitmap & FBSEC_DESC_AEAD_AES256_GCM) != 0u) return "AES-256-GCM";
+  if ((bitmap & FBSEC_DESC_AEAD_ASCON128)   != 0u) return "Ascon-128";
+  if ((bitmap & FBSEC_DESC_AEAD_CHACHA20)   != 0u) return "ChaCha20-Poly1305";
+  return "unknown";
+}
+
+/**
+ * @brief  Render the symbolic meaning of one scanned sub-index.
+ *
+ * @return true if @p out was filled with an interpretation, false if the
+ *         (index, sub) pair has no known decoding.
+ */
+static bool interpret_sub(uint16_t index, uint8_t sub,
+                          const uint8_t *b, uint32_t len,
+                          char *out, size_t outsz) {
+  uint32_t v = rd_u32le(b, len);
+
+  switch (index) {
+    case 0xC000u:
+      switch (sub) {
+        case 0x01u: {
+          uint8_t m = FBSEC_TYPEWORD_MECH(v);
+          (void)snprintf(out, outsz,
+            "type word: profile %s, level C%u, restore %u, mechanisms%s%s%s, suite gen %u",
+            menu_profile_name(FBSEC_TYPEWORD_PROFILE(v)),
+            (unsigned)FBSEC_TYPEWORD_LEVEL(v),
+            (unsigned)FBSEC_TYPEWORD_RESTORE(v),
+            ((m & FBSEC_MECH_AEAD) != 0u) ? " AEAD" : "",
+            ((m & FBSEC_MECH_RPK)  != 0u) ? " RPK"  : "",
+            ((m & FBSEC_MECH_X509) != 0u) ? " X509" : "",
+            (unsigned)FBSEC_TYPEWORD_SUITE(v));
+          return true;
+        }
+        case 0x02u:
+          (void)snprintf(out, outsz, "session protocols:%s%s%s%s%s",
+            ((v & FBSEC_DESC_PROTO_FBSEC) != 0u)        ? " FBsec" : "",
+            ((v & FBSEC_DESC_PROTO_TLS_PSK) != 0u)      ? " TLS-PSK" : "",
+            ((v & FBSEC_DESC_PROTO_CTLS) != 0u)         ? " cTLS" : "",
+            ((v & FBSEC_DESC_PROTO_TLS13) != 0u)        ? " TLS1.3" : "",
+            ((v & FBSEC_DESC_PROTO_SIGNED_FBSEC) != 0u) ? " signed-FBsec" : "");
+          return true;
+        case 0x03u:
+          (void)snprintf(out, outsz, "%s, tag %u bytes",
+            menu_aead_name((uint8_t)(v & 0xFFu)),
+            (unsigned)((v >> 8) & 0xFFu));
+          return true;
+        case 0x04u:
+          (void)snprintf(out, outsz, "RPK algorithm: %s",
+            (b[0] == FBSEC_DESC_RPK_ED25519) ? "Ed25519" :
+            (b[0] == FBSEC_DESC_RPK_NONE)    ? "none" : "reserved");
+          return true;
+        case 0x05u:
+          if (v == 0u) {
+            (void)snprintf(out, outsz, "identity flags: none");
+          } else {
+            (void)snprintf(out, outsz, "identity flags:%s%s%s%s",
+              ((v & FBSEC_DESC_ID_IDEVID) != 0u)       ? " IDevID" : "",
+              ((v & FBSEC_DESC_ID_LDEVID) != 0u)       ? " LDevID" : "",
+              ((v & FBSEC_DESC_ID_SIGNED_FBSEC) != 0u) ? " signed-FBsec" : "",
+              ((v & FBSEC_DESC_ID_X509) != 0u)         ? " X509" : "");
+          }
+          return true;
+        case 0x06u:
+          if (v == 0u) {
+            (void)snprintf(out, outsz, "handover: none");
+          } else {
+            (void)snprintf(out, outsz, "handover:%s%s%s",
+              ((v & FBSEC_DESC_HANDOVER_TOFU) != 0u)    ? " TOFU" : "",
+              ((v & FBSEC_DESC_HANDOVER_TOKEN) != 0u)   ? " printed-token" : "",
+              ((v & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) ? " voucher" : "");
+          }
+          return true;
+        case 0x07u:
+          (void)snprintf(out, outsz, "manufacturer-specific capabilities");
+          return true;
+        default:
+          return false;
+      }
+    case 0xC001u:
+      switch (sub) {
+        case 0x01u:
+          (void)snprintf(out, outsz, "commissioning: %s",
+            (b[0] == FBSEC_STAT_COMMISSIONED) ? "commissioned/owned"
+                                              : "uncommissioned");
+          return true;
+        case 0x02u:
+          if (v == 0u) {
+            (void)snprintf(out, outsz, "keys installed: none");
+          } else {
+            (void)snprintf(out, outsz, "keys installed:%s%s%s",
+              ((v & FBSEC_STAT_KEY_PROVISIONING) != 0u) ? " Provisioning" : "",
+              ((v & FBSEC_STAT_KEY_INTEGRATOR) != 0u)   ? " Integrator" : "",
+              ((v & FBSEC_STAT_KEY_OPERATOR) != 0u)     ? " Operator" : "");
+          }
+          return true;
+        default:
+          return false;
+      }
+    case 0xC011u: {
+      const char *role = (sub == 0x01u) ? "Provisioning"
+                       : (sub == 0x02u) ? "Integrator"
+                       : (sub == 0x03u) ? "Operator" : "Application";
+      if (v == 0u) {
+        (void)snprintf(out, outsz, "%s key: empty slot", role);
+      } else {
+        (void)snprintf(out, outsz, "%s key id = 0x%08lX",
+                       role, (unsigned long)v);
+      }
+      return true;
+    }
+    case 0x1018u: {
+      uint32_t be = rd_u32be(b, len);   /* 1018h is authored big-endian */
+      switch (sub) {
+        case 0x01u:
+          (void)snprintf(out, outsz, "Vendor ID = 0x%08lX", (unsigned long)be);
+          return true;
+        case 0x02u: {
+          char asc[5];
+          int  printable = 1;
+          uint32_t i;
+          for (i = 0u; (i < 4u) && (i < len); ++i) {
+            unsigned char ch = b[i];
+            asc[i] = ((ch >= 0x20u) && (ch < 0x7Fu)) ? (char)ch : '.';
+            if (!((ch >= 0x20u) && (ch < 0x7Fu))) { printable = 0; }
+          }
+          asc[i] = '\0';
+          if (printable != 0) {
+            (void)snprintf(out, outsz, "Product code = 0x%08lX (\"%s\")",
+                           (unsigned long)be, asc);
+          } else {
+            (void)snprintf(out, outsz, "Product code = 0x%08lX",
+                           (unsigned long)be);
+          }
+          return true;
+        }
+        case 0x03u:
+          (void)snprintf(out, outsz, "Revision = 0x%08lX", (unsigned long)be);
+          return true;
+        case 0x04u:
+          (void)snprintf(out, outsz, "Serial number = 0x%08lX",
+                         (unsigned long)be);
+          return true;
+        default:
+          return false;
+      }
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * @brief  Read and print every sub-index of one constant, unsecured
+ *         security-parameter object.
+ *
+ * Sub 0x00 carries the highest sub-index, so it bounds the loop. Reads use
+ * the plain (body-less) transport read path; no key is required.
+ *
+ * @param  transport   Secure transport (its read fn is used unsecured).
+ * @param  target      Target node id.
+ * @param  timeout_ms  Per-read timeout.
+ * @param  index       Object index to scan.
+ * @param  name        Human-readable object name for the heading.
+ */
+static void scan_one_object(const fbsec_secure_transport_t *transport,
+                            uint16_t target, uint32_t timeout_ms,
+                            uint16_t index, const char *name) {
+  uint8_t       buf[64];
+  uint32_t      len  = 0u;
+  fbsec_abort_t abrt = FBSEC_ABORT_NONE;
+  fbsec_secure_status_t rc;
+  unsigned      sub;
+  unsigned      highest;
+  char          note[192];
+
+  /* Object heading (no trace row is open here). */
+  printf("  %04Xh %s:\n", (unsigned)index, name);
+
+  /* Sub 0x00 -> highest sub-index. The interpretation is appended inline to
+     the RX trace line the transport read produced (no duplicate data). */
+  rc = transport->read(transport->ctx, target, ((uint32_t)index << 16),
+                       NULL, 0u, buf, (uint32_t)sizeof buf, timeout_ms,
+                       &len, &abrt);
+  if ((rc != FBSEC_SECP_OK) || (len < 1u)) {
+    /* On an abort the RX row already carries "abort 0x.. (name)"; otherwise
+       close any open row and note the transport failure. */
+    if (rc != FBSEC_SECP_ABORT) {
+      (void)snprintf(note, sizeof note, "read failed (%s)",
+                     fbsec_client_secp_strerror(rc));
+      fbsec_client_trace_close_with_note(note);
+    } else {
+      fbsec_client_trace_close_no_plain();
+    }
+    return;
+  }
+  highest = buf[0];
+  (void)snprintf(note, sizeof note, "highest sub-index 0x%02X", highest);
+  fbsec_client_trace_close_with_note(note);
+
+  for (sub = 1u; sub <= highest; ++sub) {
+    uint32_t data_id = ((uint32_t)index << 16) | ((uint32_t)sub << 8);
+    len  = 0u;
+    abrt = FBSEC_ABORT_NONE;
+    rc = transport->read(transport->ctx, target, data_id, NULL, 0u,
+                         buf, (uint32_t)sizeof buf, timeout_ms, &len, &abrt);
+    if ((rc == FBSEC_SECP_OK) &&
+        interpret_sub(index, (uint8_t)sub, buf, len, note, sizeof note)) {
+      fbsec_client_trace_close_with_note(note);
+    } else {
+      /* OK-but-unknown: close plainly; abort: row already closed. */
+      fbsec_client_trace_close_no_plain();
+    }
+  }
+}
+
+/**
+ * @brief  Scan the constant, unsecured security-parameter objects and dump
+ *         their contents: C000h capabilities, C001h status, C011h key ids,
+ *         and object 1018h identity. No key is required. Each value's
+ *         symbolic meaning is appended inline to its RX trace line.
+ */
+static void scan_security_params(const fbsec_secure_transport_t *transport,
+                                 uint16_t target, uint32_t timeout_ms) {
+  static const struct { uint16_t index; const char *name; } objs[] = {
+    { 0xC000u, "capabilities" },
+    { 0xC001u, "status" },
+    { 0xC011u, "AEAD key ids" },
+    { 0x1018u, "identity" },
+  };
+  size_t i;
+  bool   prev_quiet = fbsec_client_trace_get_quiet();
+
+  printf("--- security parameter scan (target 0x%02X, no key) ---\n",
+         (unsigned)(target & 0xFFu));
+  /* The scan is trace-driven: keep trace on and force RX rows to stay open
+     so the interpretation is appended inline. */
+  fbsec_client_trace_set_quiet(false);
+  fbsec_client_trace_set_force_defer(true);
+  for (i = 0u; i < (sizeof objs / sizeof objs[0]); ++i) {
+    scan_one_object(transport, target, timeout_ms,
+                    objs[i].index, objs[i].name);
+  }
+  fbsec_client_trace_set_force_defer(false);
+  fbsec_client_trace_set_quiet(prev_quiet);
 }
 
 /* ---- REPL ---------------------------------------------------------- */
@@ -500,6 +785,8 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
     printf("=== fbsec client menu  (target 0x%02X  bus %s  %s) ===\n",
            (unsigned)(target & 0xFFu), cfg->bus_label,
            fbsec_client_keys_use_encryption() ? "encrypt+auth" : "auth-only (MAC)");
+    printf("  A) %-24s  reads C000/C001/C011/1018 (no key)\n",
+           "Scan security parameters");
     printf("  1) %-24s  SRD 0x%06X\n",
            "Single 16-byte read",
            MENU_DATA_ID24(MENU_ID_DATA_ID));
@@ -542,6 +829,10 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
     }
 
     printf("\n");
+    if (c == 'a' || c == 'A') {
+      scan_security_params(transport, target, cfg->timeout_ms);
+      continue;
+    }
     fbsec_client_trace_print_legend();
     if (strcmp(line, "1") == 0) {
       uint8_t buf[FBSEC_AEAD_MAX_PROTECTED];

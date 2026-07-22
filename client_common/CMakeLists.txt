@@ -13,7 +13,7 @@
 ## License: Apache License 2.0.
 ## ---------------------------------------------------------------------------
 
-add_library(fbsec_client_common STATIC
+set(FBSEC_CLIENT_COMMON_SRC
   client_common_cfg.h
   client_common_platform.c
   client_common_platform.h
@@ -23,11 +23,25 @@ add_library(fbsec_client_common STATIC
   client_common_trace.h
   client_common_verbs.c
   client_common_verbs.h
+  client_common_caps.c
+  client_common_caps.h
   client_common_menu.c
   client_common_menu.h
   client_common_cli.c
   client_common_cli.h
 )
+
+# Optional asymmetric identity hooks + commissioning (client side).
+if(FBSEC_FEATURE_ASYM)
+  list(APPEND FBSEC_CLIENT_COMMON_SRC
+    client_common_asym.c
+    client_common_asym.h
+    client_common_commission.c
+    client_common_commission.h
+  )
+endif()
+
+add_library(fbsec_client_common STATIC ${FBSEC_CLIENT_COMMON_SRC})
 
 target_include_directories(fbsec_client_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"

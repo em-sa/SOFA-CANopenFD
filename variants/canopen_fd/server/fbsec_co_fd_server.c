@@ -5,7 +5,7 @@
  * @brief   SOFA CANopen FD, USDO-responder server main.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 20-JUL-2026
  *
  * Thin variant entry point: connect to the CAN FD bus simulator via
  * `fbsec_co_fd_carrier`, send `SIM_PEER_ANNOUNCE` (role server),
@@ -96,7 +96,7 @@ static server_variant_cfg_t  g_cfg;
  * The reply USDO command depends on the request command:
  *   - download_req (0x01) -> download_resp (0x21) on success / DEFER
  *   - upload_req   (0x11) -> upload_resp   (0x31) on success
- *   - either                -> abort (0x80) on non-zero status
+ *   - either                -> abort (7Fh) on non-zero status
  *
  * The recv loop captures requester / session / index / sub / cmd from
  * the inbound USDO PDU before invoking dispatch; send_reply uses them
@@ -124,7 +124,8 @@ static BOOL WINAPI ctrl_handler(DWORD ctrl_type);
 static void run_dispatch_loop(void);
 
 static int  send_reply_cb(void *user, uint16_t to_dev, uint32_t data_id,
-                          uint32_t status, const uint8_t *data, uint16_t data_len);
+                          fbsec_abort_t status, const uint8_t *data,
+                          uint16_t data_len);
 
 /* ---- main -------------------------------------------------------------- */
 
@@ -170,19 +171,28 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (fbsec_server_od_init(g_cfg.common.my_dev, g_cfg.common.key_file_path) != 0) {
+  if (fbsec_server_od_init(g_cfg.common.my_dev, g_cfg.common.key_file_path,
+                           g_cfg.common.od_file_path) != 0) {
     fbsec_co_fd_carrier_close(&g_carrier);
     fbsec_co_fd_carrier_global_shutdown();
     return 1;
   }
 
+  fprintf(stderr, "Object Dictionary (USDO mapped):\n");
+  if (fbsec_sod_find_entry(FBSEC_SERVER_ENTRY_SRD_DATA_ID) != NULL) {
+    fprintf(stderr,
+            "  idx 0x%04X sub 0x00  SRD 16-byte 1018h identity (C018h)\n",
+            (unsigned)(FBSEC_SERVER_ENTRY_SRD_DATA_ID >> 16));
+  } else {
+    fprintf(stderr,
+            "  idx 0xC018 (identity) absent: pass --od-file with a 1018h quad\n");
+  }
   fprintf(stderr,
-          "Object Dictionary (USDO mapped):\n"
-          "  idx 0x%04X sub 0x00  SRD 16-byte array (CONST identity pattern)\n"
           "  idx 0x%04X sub 0x00  SWR 16-byte array (last write)\n"
           "  idx 0x%04X sub 0x00  SRD 32-bit u_int (auto-increments)\n"
-          "  idx 0x%04X sub 0x00  SWR 32-bit u_int (mirrors into SRD)\n",
-          (unsigned)(FBSEC_SERVER_ENTRY_SRD_DATA_ID >> 16),
+          "  idx 0x%04X sub 0x00  SWR 32-bit u_int (mirrors into SRD)\n"
+          "  idx 0xC000/0xC001    capability / status descriptors\n"
+          "  idx 0xC011 sub 0x00  AEAD key ids (slot count + per-slot id)\n",
           (unsigned)(FBSEC_SERVER_ENTRY_SWR_DATA_ID >> 16),
           (unsigned)(FBSEC_SERVER_ENTRY_RD_DATA_ID >> 16),
           (unsigned)(FBSEC_SERVER_ENTRY_WR_DATA_ID >> 16));
@@ -271,14 +281,19 @@ static void print_usage(FILE *f) {
     "  --color             force ANSI colour on (default: auto-on if TTY)\n"
     "  --no-color          force ANSI colour off (e.g. when piping to a file)\n"
     "  --key-file FILE     replace the demo keys with entries from FILE\n"
-    "                      (one row per keyid: '<keyid> <label> <hex>')\n"
+    "                      (one row: '<keyid> <label> <hex> [<u32-id>]')\n"
+    "  --od-file FILE      load constant unsecured OD entries from FILE\n"
+    "                      (rows '<index> <sub> <len> <data...>'; supplies\n"
+    "                      the 1018h identity that C018h serves)\n"
     "  --help              print this and exit 0\n"
     "\n"
-    "Default object table is four secure entries, USDO mapped:\n"
+    "Object table (USDO mapped):\n"
     "  idx 0x2020 sub 0x00  SECURE_RO  4 bytes\n"
     "  idx 0x2010 sub 0x00  SECURE_WO  4 bytes  (shadows into 0x2020)\n"
-    "  idx 0xC018 sub 0x00  SECURE_RO 16 bytes  identity pattern\n"
-    "  idx 0xC016 sub 0x00  SECURE_WO 16 bytes\n",
+    "  idx 0x2016 sub 0x00  SECURE_WO 16 bytes\n"
+    "  idx 0xC018 sub 0x00  SECURE_RO 16 bytes  1018h identity (needs --od-file)\n"
+    "  idx 0xC000/0xC001    capability / status descriptors\n"
+    "  idx 0xC011 sub 0x00  AEAD key ids\n",
     DEFAULT_BUS_HOST, DEFAULT_BUS_PORT,
     (unsigned)DEFAULT_NODE_ID, DEFAULT_NAME,
     (unsigned)SIM_NAME_MAX);
@@ -353,6 +368,188 @@ static int send_announce(void) {
   return 0;
 }
 
+/* ---- USDO segmented transfer (optional asymmetric layer) -------------- */
+#if FBSEC_FEATURE_ASYM
+
+/* Single-slot segmented-download reassembly and segmented-upload source.
+   Sufficient for the single-client demo; a multi-client bus would key
+   these by (peer, session). */
+static struct {
+  bool     active;
+  uint8_t  src;
+  uint8_t  session;
+  uint8_t  sub;
+  uint16_t index;
+  uint8_t  counter;
+  uint16_t total;
+  uint16_t have;
+  uint8_t  buf[FBSEC_CO_FD_USDO_SEG_BODY_MAX];
+} g_segdl;
+
+static struct {
+  bool     active;
+  uint8_t  dst;
+  uint8_t  session;
+  uint16_t total;
+  uint16_t sent;
+  uint8_t  counter;
+  uint8_t  buf[FBSEC_CO_FD_USDO_SEG_BODY_MAX];
+} g_segul;
+
+/* Lowest index the USDO codec will encode. Used as the abort multiplexor
+   when the offending frame was a segment, which carries none. */
+#define SERVER_SEG_ABORT_INDEX 0x1000u
+
+/* Send a USDO abort and drop both segmented-transfer contexts. The code
+   is a CiA 1301 Table 31 value describing the segmented-transfer fault
+   (see shared/fbsec_abort.h). */
+static void server_seg_abort(uint8_t peer, uint8_t session,
+                             uint16_t index, uint8_t subindex,
+                             fbsec_abort_t code) {
+  fbsec_co_fd_frame_t f;
+  g_segdl.active = false;
+  g_segul.active = false;
+  if (fbsec_co_fd_usdo_encode_abort(&f, g_cfg.node_id, peer, session,
+                                    index, subindex, code)) {
+    (void)fbsec_co_fd_carrier_send(&g_carrier, &f);
+  }
+}
+
+/**
+ * @brief Handle a USDO download-initiate request (cmd 0x02).
+ *
+ * Opens the single reassembly slot and acknowledges with cmd 0x22.
+ *
+ * @param pdu  decoded initiate request. Must not be NULL.
+ */
+static void server_seg_download_init(const fbsec_co_fd_usdo_pdu_t *pdu) {
+  fbsec_co_fd_frame_t f;
+
+  if (pdu->total_size > (uint32_t)sizeof g_segdl.buf) {
+    server_seg_abort(pdu->src_node_id, pdu->session, pdu->index, pdu->subindex,
+                     FBSEC_ABORT_LEN_TOO_HIGH);
+    return;
+  }
+  g_segdl.active  = true;
+  g_segdl.src     = pdu->src_node_id;
+  g_segdl.session = pdu->session;
+  g_segdl.index   = pdu->index;
+  g_segdl.sub     = pdu->subindex;
+  g_segdl.counter = 0u;
+  g_segdl.total   = (uint16_t)pdu->total_size;
+  g_segdl.have    = 0u;
+
+  if (fbsec_co_fd_usdo_encode_download_init_resp(&f, g_cfg.node_id,
+                                                 pdu->src_node_id, pdu->session,
+                                                 pdu->index, pdu->subindex)) {
+    (void)fbsec_co_fd_carrier_send(&g_carrier, &f);
+  }
+}
+
+/* True when @p pdu belongs to the open reassembly slot. */
+static bool server_seg_download_matches(const fbsec_co_fd_usdo_pdu_t *pdu) {
+  return g_segdl.active
+      && (pdu->src_node_id == g_segdl.src)
+      && (pdu->session     == g_segdl.session);
+}
+
+/**
+ * @brief Append one download segment to the reassembly slot.
+ *
+ * @param pdu  decoded segment / end request. Must not be NULL.
+ * @return true when this was the end segment and the body is complete in
+ *         @c g_segdl.buf; false when more segments are expected or the
+ *         transfer was aborted.
+ */
+static bool server_seg_download_feed(const fbsec_co_fd_usdo_pdu_t *pdu) {
+  fbsec_co_fd_frame_t f;
+  bool last = (pdu->cmd == FBSEC_CO_FD_USDO_CMD_DOWNLOAD_END_REQ);
+
+  if (!server_seg_download_matches(pdu)) {
+    server_seg_abort(pdu->src_node_id, pdu->session, SERVER_SEG_ABORT_INDEX, 0u,
+                     FBSEC_ABORT_SESSION_ID);
+    return false;
+  }
+  if (!last && (pdu->counter != g_segdl.counter)) {
+    server_seg_abort(pdu->src_node_id, pdu->session, g_segdl.index, g_segdl.sub,
+                     FBSEC_ABORT_SEG_COUNTER);
+    return false;
+  }
+  if (((uint32_t)g_segdl.have + pdu->data_len) > (uint32_t)g_segdl.total) {
+    server_seg_abort(pdu->src_node_id, pdu->session, g_segdl.index, g_segdl.sub,
+                     FBSEC_ABORT_DATA_SIZE);
+    return false;
+  }
+  if (pdu->data_len > 0u) {
+    memcpy(&g_segdl.buf[g_segdl.have], pdu->data, pdu->data_len);
+  }
+  g_segdl.have = (uint16_t)(g_segdl.have + pdu->data_len);
+
+  if (!last) {
+    if (fbsec_co_fd_usdo_encode_download_seg_resp(&f, g_cfg.node_id,
+                                                  pdu->src_node_id, pdu->session,
+                                                  g_segdl.counter)) {
+      (void)fbsec_co_fd_carrier_send(&g_carrier, &f);
+    }
+    g_segdl.counter++;
+    return false;
+  }
+
+  if (g_segdl.have != g_segdl.total) {
+    server_seg_abort(pdu->src_node_id, pdu->session, g_segdl.index, g_segdl.sub,
+                     FBSEC_ABORT_DATA_SIZE);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Serve one upload-segment request (cmd 0x13) from the pending
+ *        segmented-upload body.
+ *
+ * @param pdu  decoded upload-segment request. Must not be NULL.
+ */
+static void server_seg_upload_serve(const fbsec_co_fd_usdo_pdu_t *pdu) {
+  fbsec_co_fd_frame_t f;
+  uint16_t remaining;
+  bool     ok;
+
+  if ((!g_segul.active) || (pdu->src_node_id != g_segul.dst)
+      || (pdu->session != g_segul.session)) {
+    server_seg_abort(pdu->src_node_id, pdu->session, SERVER_SEG_ABORT_INDEX, 0u,
+                     FBSEC_ABORT_SESSION_ID);
+    return;
+  }
+  if (pdu->counter != g_segul.counter) {
+    server_seg_abort(pdu->src_node_id, pdu->session, SERVER_SEG_ABORT_INDEX, 0u,
+                     FBSEC_ABORT_SEG_COUNTER);
+    return;
+  }
+
+  remaining = (uint16_t)(g_segul.total - g_segul.sent);
+  if (remaining > FBSEC_CO_FD_USDO_SEG_DATA_MAX) {
+    ok = fbsec_co_fd_usdo_encode_upload_seg_resp(&f, g_cfg.node_id, g_segul.dst,
+                                                 g_segul.session, g_segul.counter,
+                                                 &g_segul.buf[g_segul.sent]);
+    if (ok) {
+      (void)fbsec_co_fd_carrier_send(&g_carrier, &f);
+    }
+    g_segul.sent = (uint16_t)(g_segul.sent + FBSEC_CO_FD_USDO_SEG_DATA_MAX);
+    g_segul.counter++;
+    return;
+  }
+
+  ok = fbsec_co_fd_usdo_encode_upload_end_resp(&f, g_cfg.node_id, g_segul.dst,
+                                               g_segul.session,
+                                               &g_segul.buf[g_segul.sent],
+                                               remaining);
+  if (ok) {
+    (void)fbsec_co_fd_carrier_send(&g_carrier, &f);
+  }
+  g_segul.active = false;
+}
+#endif /* FBSEC_FEATURE_ASYM */
+
 /* ---- Dispatch loop ---------------------------------------------------- */
 
 /**
@@ -405,6 +602,39 @@ static void run_dispatch_loop(void) {
     if (kind != FBSEC_CO_FD_USDO_KIND_REQUEST) continue;
     if (pdu.dst_node_id != g_cfg.node_id) continue;
 
+#if FBSEC_FEATURE_ASYM
+    /* USDO segmented transfers: reassemble large downloads and serve the
+       segments of a large upload before the normal single-frame dispatch. */
+    if (pdu.cmd == FBSEC_CO_FD_USDO_CMD_DOWNLOAD_INIT_REQ) {
+      server_seg_download_init(&pdu);
+      continue;
+    }
+    if ((pdu.cmd == FBSEC_CO_FD_USDO_CMD_DOWNLOAD_SEG_REQ)
+        || (pdu.cmd == FBSEC_CO_FD_USDO_CMD_DOWNLOAD_END_REQ)) {
+      if (!server_seg_download_feed(&pdu)) {
+        continue;   /* ack / abort already sent, or more segments expected */
+      }
+      request_ctx_t sctx = {
+        .src_node_id = g_segdl.src,
+        .req_cmd     = FBSEC_CO_FD_USDO_CMD_DOWNLOAD_END_REQ,
+        .session     = g_segdl.session,
+        .index       = g_segdl.index,
+        .subindex    = g_segdl.sub
+      };
+      uint32_t seg_data_id =
+        fbsec_co_fd_data_id_from_index_sub(g_segdl.index, g_segdl.sub);
+      fbsec_server_dispatch_request((uint16_t)g_segdl.src, seg_data_id,
+                                    g_segdl.buf, g_segdl.total,
+                                    send_reply_cb, &sctx);
+      g_segdl.active = false;
+      continue;
+    }
+    if (pdu.cmd == FBSEC_CO_FD_USDO_CMD_UPLOAD_SEG_REQ) {
+      server_seg_upload_serve(&pdu);
+      continue;
+    }
+#endif
+
     /* Compute data_id from (index, sub) per doc/fieldbus_sim_canopen_fd_spec.txt §2. */
     uint32_t data_id = fbsec_co_fd_data_id_from_index_sub(pdu.index, pdu.subindex);
 
@@ -431,15 +661,49 @@ static void run_dispatch_loop(void) {
  *        USDO response cmd (or USDO abort on non-zero status).
  */
 static int send_reply_cb(void *user, uint16_t to_dev, uint32_t data_id,
-                         uint32_t status, const uint8_t *data, uint16_t data_len) {
+                         fbsec_abort_t status, const uint8_t *data,
+                         uint16_t data_len) {
   (void)to_dev;
   const request_ctx_t *rctx = (const request_ctx_t *)user;
 
   fbsec_co_fd_frame_t f;
   bool ok = false;
 
-  if (status != 0u) {
-    /* Abort: cmd 0x80, 4-byte abort_code. */
+#if FBSEC_FEATURE_ASYM
+  /* A reply larger than one expedited data block is parked and announced
+     with an upload-initiate response (cmd 0x32); the client then pulls it
+     with the standard upload-segment exchange. */
+  if (status == FBSEC_ABORT_NONE && data_len > FBSEC_CO_FD_USDO_DATA_MAX) {
+    if (data_len > (uint16_t)sizeof g_segul.buf) {
+      fprintf(stderr, EXEC_NAME ": reply too large for a segmented upload\n");
+      return -1;
+    }
+    memcpy(g_segul.buf, data, data_len);
+    g_segul.total   = data_len;
+    g_segul.sent    = 0u;
+    g_segul.counter = 0u;
+    g_segul.session = rctx->session;
+    g_segul.dst     = rctx->src_node_id;
+    g_segul.active  = true;
+    ok = fbsec_co_fd_usdo_encode_upload_init_resp(&f, g_cfg.node_id,
+                                                  rctx->src_node_id, rctx->session,
+                                                  rctx->index, rctx->subindex,
+                                                  data_len);
+    if (!ok) {
+      fprintf(stderr, EXEC_NAME ": USDO upload-initiate encode failed\n");
+      return -1;
+    }
+    if (fbsec_co_fd_carrier_send(&g_carrier, &f) != FBSEC_CO_FD_CARRIER_OK) {
+      fprintf(stderr, EXEC_NAME ": carrier send failed\n");
+      return -1;
+    }
+    (void)data_id;
+    return 0;
+  }
+#endif
+
+  if (status != FBSEC_ABORT_NONE) {
+    /* Abort: cmd 7Fh, 7-byte CiA 1301 Table 32 frame, 1-byte ac. */
     ok = fbsec_co_fd_usdo_encode_abort(&f, g_cfg.node_id, rctx->src_node_id,
                                        rctx->session,
                                        rctx->index, rctx->subindex, status);
@@ -451,6 +715,15 @@ static int send_reply_cb(void *user, uint16_t to_dev, uint32_t data_id,
                                                rctx->session,
                                                rctx->index, rctx->subindex,
                                                data, data_len);
+#if FBSEC_FEATURE_ASYM
+  } else if (rctx->req_cmd == FBSEC_CO_FD_USDO_CMD_DOWNLOAD_END_REQ) {
+    /* Segmented download completed -> download-end response (cmd 0x24).
+       Any reply body a segmented write produced is dropped: the CiA 1301
+       end response carries none, and no SOFA write verb returns one. */
+    ok = fbsec_co_fd_usdo_encode_download_end_resp(&f, g_cfg.node_id,
+                                                   rctx->src_node_id,
+                                                   rctx->session);
+#endif
   } else if (rctx->req_cmd == FBSEC_CO_FD_USDO_CMD_UPLOAD_REQ) {
     /* SRD Pass-2 data fetch or SWR Pass-1 server_random -> upload_resp. */
     ok = fbsec_co_fd_usdo_encode_upload_resp(&f, g_cfg.node_id, rctx->src_node_id,
@@ -458,11 +731,11 @@ static int send_reply_cb(void *user, uint16_t to_dev, uint32_t data_id,
                                              rctx->index, rctx->subindex,
                                              data, data_len);
   } else {
-    /* Unknown request cmd -> abort transfer. */
+    /* Unknown request cmd -> CiA 1301 Table 31 13h. */
     ok = fbsec_co_fd_usdo_encode_abort(&f, g_cfg.node_id, rctx->src_node_id,
                                        rctx->session,
                                        rctx->index, rctx->subindex,
-                                       0x08000020u /* FBSEC_SOD_ABORT_TRANSFER */);
+                                       FBSEC_ABORT_BAD_CMD);
   }
 
   if (!ok) {

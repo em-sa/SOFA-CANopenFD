@@ -58,8 +58,7 @@ keyid byte selects are the already-derived **session keys**. The
 three slots are therefore labelled *Provisioning Session Key*,
 *Integrator Session Key*, *Operator Session Key*. See the "Key Model"
 and "Master Keys vs Session Keys" sections of the Integration Guide
-chapter in `doc/EmSA-UM-105-COP FBsec CANopen V01.pdf`, and
-`doc/fieldbus_sim_secure_tunnel_spec.txt` §9, for the full discussion.
+chapter in `doc/SOFA-UM-105.pdf` for the full discussion.
 The full key-provisioning lifecycle SOFA simulates out is specified in
 the EmSA WP-104 whitepaper (see [References](#references)).
 
@@ -170,18 +169,17 @@ SOFA/
 
 ## Documentation
 
-Start with the user manual `doc/EmSA-UM-105-COP FBsec CANopen V01.pdf`;
+Start with the user manual `doc/SOFA-UM-105.pdf`;
 its "Running the Examples" chapter is the step-by-step demo guide, and
 the "Integration Guide" chapter at the end is the porting reference
 (key handling, MCU storage, OD/USDO wiring, abort-code mapping, threat
-model). Full index in `doc/README.txt`. Layout:
+model). Chapters 4 and 5 are the normative wire and object-dictionary
+reference. Full index in `doc/README.txt`.
 
-| File                                        | What it covers                                  |
-|---------------------------------------------|-------------------------------------------------|
-| `doc/EmSA-UM-105-COP FBsec CANopen V01.pdf` | user manual (demo walkthrough + Integration Guide) |
-| `doc/fieldbus_sim_secure_tunnel_spec.txt`   | secure-tunnel wire spec (AEAD, AAD, keyid byte) |
-| `doc/fieldbus_sim_canopen_fd_spec.txt`      | FD bus + USDO PDU + CAN ID family               |
-| `doc/flow_diagrams.txt`                     | sequencediagram.org source for the four flows   |
+| File                  | What it covers                                              |
+|-----------------------|------------------------------------------------------------|
+| `doc/SOFA-UM-105.pdf` | user manual: demo walkthrough, wire and OD reference, Integration Guide |
+| `doc/README.txt`      | this documentation index                                   |
 
 ## References
 
@@ -190,11 +188,11 @@ EmSA security whitepaper library:
 
 <https://www.esacademy.com/en/library/security-white-papers.html>
 
-- **EmSA-WP-105** — the secure-access protocol and its relationship to
-  ISO/IEC 9798-2 (referenced by `doc/README.txt` and the wire spec).
-- **User manual** — *EmSA-UM-105 COP FBsec CANopen* (also bundled as a
-  PDF in `doc/`).
-- **Executable demo** — ready-to-run binaries with launcher batches, for
+- **EmSA-WP-105**: the secure-access protocol and its relationship to
+  ISO/IEC 9798-2 (referenced by `doc/README.txt` and the user manual).
+- **User manual**: *EmSA-UM-105 COP FBsec CANopen*, bundled in this
+  distribution as `doc/SOFA-UM-105.pdf`.
+- **Executable demo**: ready-to-run binaries with launcher batches, for
   direct execution without building from source.
 
 The design also draws on **EmSA-WP-104** (key provisioning and the

@@ -7,11 +7,14 @@
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
  * @version V1.0 of 07-MAY-2026
  *
- * REPL that prompts for a target device id, then offers six demo
- * actions against the four hardcoded SECURE_RO/WO data_ids:
+ * REPL that prompts for a target device id, then offers a security-
+ * parameter scan plus six demo actions against the four hardcoded
+ * SECURE_RO/WO data_ids:
  *
- *   1) SRD 0xC018:00  - single 16-byte read (binary identity pattern)
- *   2) SWR 0xC016:00  - single 16-byte write (incrementing counter)
+ *   A) unsecured scan of the constant security parameters
+ *      (C000h capabilities, C001h status, C011h key ids, 1018h identity)
+ *   1) SRD 0xC018:00  - single 16-byte read (1018h authenticated identity)
+ *   2) SWR 0x2016:00  - single 16-byte write (incrementing counter)
  *   3) SRD 0x2020:00  - single 4-byte read of the shadow value
  *   4) SWR 0x2010:00  - single 4-byte write (auto-increments)
  *   5) SRD 0x2020:00  - 300 cyclic reads, 200 ms apart

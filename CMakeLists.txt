@@ -60,6 +60,20 @@ set(FBSEC_FEATURE_READ   1 CACHE STRING "Include read path  (0/1)")
 set(FBSEC_FEATURE_WRITE  1 CACHE STRING "Include write path (0/1)")
 set(FBSEC_FEATURE_CYCLIC 1 CACHE STRING "Include cyclic mode (0/1)")
 
+# Optional Ed25519 asymmetric identity layer (capability/status
+# descriptors, IDevID/LDevID, signed-FBsec, handover). Default OFF: the
+# whole layer compiles out and the wire behaviour is byte-identical to a
+# symmetric-only build. FBSEC_ASYM_ED25519 / FBSEC_ASYM_SIGNED_FBSEC are
+# derived from this master in fbsec_config.h, so the CMake surface stays
+# two knobs. See doc/fieldbus_sim_secure_tunnel_spec.txt sections 11.5-11.6.
+set(FBSEC_FEATURE_ASYM        0 CACHE STRING "Optional Ed25519 asymmetric identity layer (0/1)")
+set(FBSEC_HANDOVER_AUTHORIZED 0 CACHE STRING "Authorized handover: ownership voucher + owner epoch (0/1); requires FBSEC_FEATURE_ASYM")
+
+if(FBSEC_HANDOVER_AUTHORIZED AND NOT FBSEC_FEATURE_ASYM)
+  message(FATAL_ERROR
+          "FBSEC_HANDOVER_AUTHORIZED=1 requires FBSEC_FEATURE_ASYM=1.")
+endif()
+
 # AAD peer-identifier width (server_device_id, client_device_id) in
 # bytes. 1 = CANopen FD uint8 node_id (1..127), the literal AAD layout
 # that mirrors EmSA-WP-105's "client node ID, server node ID" wording;
@@ -83,6 +97,8 @@ add_compile_definitions(
   FBSEC_FEATURE_WRITE=${FBSEC_FEATURE_WRITE}
   FBSEC_FEATURE_CYCLIC=${FBSEC_FEATURE_CYCLIC}
   FBSEC_AEAD_DEV_ID_SIZE=${FBSEC_AEAD_DEV_ID_SIZE}
+  FBSEC_FEATURE_ASYM=${FBSEC_FEATURE_ASYM}
+  FBSEC_HANDOVER_AUTHORIZED=${FBSEC_HANDOVER_AUTHORIZED}
 )
 
 ## ---------------------------------------------------------------------------
@@ -111,7 +127,8 @@ set(MBEDTLS_SRC
   "${MBEDTLS_DIR}/library/sha256.c"
 )
 
-add_library(fbsec_crypto STATIC
+set(FBSEC_CRYPTO_SRC
+  shared/fbsec_abort.h
   shared/fbsec_aead.c
   shared/fbsec_aead.h
   shared/fbsec_hkdf.c
@@ -120,8 +137,39 @@ add_library(fbsec_crypto STATIC
   shared/fbsec_secure_proto.h
   shared/fbsec_secure_od.c
   shared/fbsec_secure_od.h
+  shared/fbsec_descriptor.c
+  shared/fbsec_descriptor.h
   shared/mbedtls_fbsec_config.h
+)
+
+# Optional Ed25519 identity layer: vendored Monocypher (RFC 8032 Ed25519)
+# plus the SOFA wrapper (fbsec_asym). Payloads too big for one expedited
+# frame ride the USDO segmented transfer in the CANopen FD variant, so no
+# fragmentation module is needed here. Compiled only when
+# FBSEC_FEATURE_ASYM is on, so the default build carries none of it.
+set(ED25519_SRC "")
+if(FBSEC_FEATURE_ASYM)
+  set(MONOCYPHER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher")
+  if(NOT EXISTS "${MONOCYPHER_DIR}/monocypher-ed25519.c")
+    message(FATAL_ERROR
+            "FBSEC_FEATURE_ASYM=1 but the vendored Monocypher sources are "
+            "not at ${MONOCYPHER_DIR}. Re-extract the SOFA archive, or "
+            "disable the asymmetric layer with -DFBSEC_FEATURE_ASYM=0.")
+  endif()
+  set(ED25519_SRC
+    "${MONOCYPHER_DIR}/monocypher.c"
+    "${MONOCYPHER_DIR}/monocypher-ed25519.c"
+  )
+  list(APPEND FBSEC_CRYPTO_SRC
+    shared/fbsec_asym.c
+    shared/fbsec_asym.h
+  )
+endif()
+
+add_library(fbsec_crypto STATIC
+  ${FBSEC_CRYPTO_SRC}
   ${MBEDTLS_SRC}
+  ${ED25519_SRC}
 )
 
 # mbedtls source files compile cleanly at /W3 but not at /W4 /WX, so
@@ -130,11 +178,22 @@ set_source_files_properties(${MBEDTLS_SRC} PROPERTIES
   COMPILE_OPTIONS "/W3;/wd4244;/wd4267;/wd4204;/wd4334"
 )
 
+# Vendored Monocypher is third-party; relax warnings the same way.
+if(ED25519_SRC)
+  set_source_files_properties(${ED25519_SRC} PROPERTIES
+    COMPILE_OPTIONS "/W3;/wd4244;/wd4267;/wd4204;/wd4334"
+  )
+endif()
+
 target_include_directories(fbsec_crypto PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/shared"
   "${MBEDTLS_DIR}/include"
   "${MBEDTLS_DIR}/library"
 )
+
+if(FBSEC_FEATURE_ASYM)
+  target_include_directories(fbsec_crypto PUBLIC "${MONOCYPHER_DIR}")
+endif()
 
 target_compile_definitions(fbsec_crypto PUBLIC
   MBEDTLS_CONFIG_FILE="mbedtls_fbsec_config.h"
@@ -173,4 +232,16 @@ option(FBSEC_VARIANT_CANOPEN_FD "Build the CANopen FD variant (USDO expedited)" 
 
 if(FBSEC_VARIANT_CANOPEN_FD)
   add_subdirectory(variants/canopen_fd)
+endif()
+
+## ---------------------------------------------------------------------------
+## Self-tests. Not part of the public distribution: tests/ is excluded from the
+## repository, so a public checkout simply has no such directory. The EXISTS
+## guard keeps that checkout configuring and building normally rather than
+## failing on a missing add_subdirectory().
+## ---------------------------------------------------------------------------
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+  enable_testing()
+  add_subdirectory(tests)
 endif()

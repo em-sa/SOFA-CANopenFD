@@ -45,11 +45,13 @@
 
 /* ---- Tag length in bytes ---------------------------------------------- */
 
-/* AES-GCM:    4..16 (NIST SP 800-38D table 1 - shorter tags reduce the
- *             security margin against forgery; 8 bytes is acceptable
- *             with bounded usage per key)
+/* AES-GCM:    4..16 (NIST SP 800-38D table 1). Default is the full 16-byte
+ *             tag: no truncation, no forgery-margin argument to make, and it
+ *             still fits the CAN FD frame budget. Truncating to 8 remains
+ *             configurable and is acceptable with bounded usage per key, but
+ *             it is a deliberate trade, not the default.
  * Ascon-128:  16 only (NIST SP 800-232; truncation is not standardized) */
-#define FBSEC_AEAD_TAG_LEN_BYTES      8
+#define FBSEC_AEAD_TAG_LEN_BYTES      16
 
 /* ---- AEAD mode -------------------------------------------------------- */
 
@@ -109,8 +111,9 @@
  *   -DFBSEC_FEATURE_READ=0  -DFBSEC_FEATURE_WRITE=0  -DFBSEC_FEATURE_CYCLIC=0
  *
  * - FBSEC_FEATURE_READ   1: include srd / srdpoll machinery; 0: server
- *                           rejects read directions with FBSEC_SOD_ABORT_-
- *                           UNSUPPORTED, client lacks fbsec_secure_read /
+ *                           rejects read directions with
+ *                           FBSEC_ABORT_NOT_BUILT (C8h), client lacks
+ *                           fbsec_secure_read /
  *                           fbsec_secure_arm_read / fbsec_secure_poll_read.
  * - FBSEC_FEATURE_WRITE  1: include swr / swrpoll; 0: symmetric.
  * - FBSEC_FEATURE_CYCLIC 1: include multi-frame (bit-6) sessions; 0: server
@@ -131,6 +134,38 @@
 #  define FBSEC_FEATURE_CYCLIC      1
 #endif
 
+/* ---- Optional asymmetric identity (WP-105 sec 5, WP-104 sec 2/5-6) ---- */
+
+/* Master gate for the whole optional Ed25519 identity layer (capability/
+ * status descriptors, IDevID/LDevID, signed-FBsec, handover). Default
+ * OFF: with this 0 the wire behaviour is byte-identical to the
+ * symmetric-only build and none of the asymmetric code is compiled.
+ * See doc/fieldbus_sim_secure_tunnel_spec.txt sections 11.5-11.6. */
+#ifndef FBSEC_FEATURE_ASYM
+#  define FBSEC_FEATURE_ASYM        0
+#endif
+
+/* Asymmetric primitive backend. Exactly one must be 1 when
+ * FBSEC_FEATURE_ASYM == 1; only Ed25519 (RFC 8032) is implemented. */
+#ifndef FBSEC_ASYM_ED25519
+#  define FBSEC_ASYM_ED25519        FBSEC_FEATURE_ASYM
+#endif
+
+/* Runtime signed-FBsec mutual authentication: append an Ed25519
+ * signature to each establishment verb so the exchange is mutually
+ * authenticated (spec section 11.6.5). Confined to establishment verbs;
+ * poll frames are never signed, so this coexists with FEATURE_CYCLIC. */
+#ifndef FBSEC_ASYM_SIGNED_FBSEC
+#  define FBSEC_ASYM_SIGNED_FBSEC   FBSEC_FEATURE_ASYM
+#endif
+
+/* Handover model: 0 = basic (born-open / integrator-rooted, no
+ * voucher), 1 = authorized (adds ownership voucher + owner epoch +
+ * integrator-authorization; spec section 11.6.6). */
+#ifndef FBSEC_HANDOVER_AUTHORIZED
+#  define FBSEC_HANDOVER_AUTHORIZED 0
+#endif
+
 /* ---- Per-(key, session) frame budget --------------------------------- */
 
 /* Maximum AEAD invocations a session may run on one key before the
@@ -138,7 +173,8 @@
  * Cyclic-mode polls increment a 32-bit counter that is checked against
  * this ceiling on the server (fbsec_secure_od.c) and the client
  * (fbsec_secure_proto.c). Reaching the ceiling surfaces as
- * FBSEC_SOD_ABORT_TRANSFER server-side and FBSEC_SECP_PROTOCOL client-side.
+ * FBSEC_ABORT_KEY_BUDGET (C7h) server-side and FBSEC_SECP_PROTOCOL
+ * client-side.
  *
  * Keep well below NIST SP 800-38D's 2^32 invocation guidance for
  * AES-GCM under a single (key, IV-prefix). 1,000,000 buys ~16 minutes
@@ -190,6 +226,24 @@
 
 #if (FBSEC_AEAD_DEV_ID_SIZE) != 1 && (FBSEC_AEAD_DEV_ID_SIZE) != 2
 #  error "FBSEC_AEAD_DEV_ID_SIZE must be 1 (CANopen FD: node_id) or 2 (uint16 device_id, reserved for future variants)."
+#endif
+
+/* ---- Optional asymmetric identity layer ------------------------------ */
+
+#if FBSEC_ASYM_ED25519 && !FBSEC_FEATURE_ASYM
+#  error "FBSEC_ASYM_ED25519 requires FBSEC_FEATURE_ASYM == 1."
+#endif
+
+#if FBSEC_FEATURE_ASYM && ((FBSEC_ASYM_ED25519) != 1)
+#  error "FBSEC_FEATURE_ASYM needs exactly one asymmetric backend (only Ed25519 is implemented)."
+#endif
+
+#if FBSEC_ASYM_SIGNED_FBSEC && !FBSEC_FEATURE_ASYM
+#  error "FBSEC_ASYM_SIGNED_FBSEC requires FBSEC_FEATURE_ASYM == 1."
+#endif
+
+#if FBSEC_HANDOVER_AUTHORIZED && !FBSEC_FEATURE_ASYM
+#  error "FBSEC_HANDOVER_AUTHORIZED requires FBSEC_FEATURE_ASYM == 1 (voucher verification needs Ed25519)."
 #endif
 
 #endif /* FBSEC_CONFIG_H */

@@ -26,7 +26,7 @@ echo.
 echo Starting CANopen FD server  node=%NODE%  bus=127.0.0.1:%PORT%
 echo (Press Ctrl+C to stop.)
 echo.
-..\build\variants\canopen_fd\server\Release\fbsec_co_fd_server.exe --bus 127.0.0.1:%PORT% --node %NODE% --key-file "%~dp0keys-demo.txt"
+..\build\variants\canopen_fd\server\Release\fbsec_co_fd_server.exe --bus 127.0.0.1:%PORT% --node %NODE% --key-file "%~dp0keys-demo.txt" --od-file "%~dp0sofa-od-demo.txt"
 
 echo.
 echo Server exited.

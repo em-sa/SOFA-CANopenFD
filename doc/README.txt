@@ -43,8 +43,8 @@ PUBLISHED DOWNLOADS
 
     - EmSA-WP-105   the secure-access protocol whitepaper (the ISO/IEC
                     9798-2 alignment referenced below).
-    - User manual   EmSA-UM-105 COP FBsec CANopen (also bundled as a PDF
-                    in this doc/ folder).
+    - User manual   EmSA-UM-105 COP FBsec CANopen, bundled in this
+                    distribution as doc/SOFA-UM-105.pdf.
     - Executable    ready-to-run binaries with launcher batches, for
       demo          direct execution without building from source.
 
@@ -118,32 +118,21 @@ STANDARDS ALIGNMENT
 
 --------------------------------------------------------------------------------
 
-  Start here:
+  The user manual is the single reference and ships beside this file:
 
-    EmSA-UM-105-COP FBsec CANopen V01.pdf
-                                      User manual. "Running the Examples"
-                                      walks through hub/server/client launch,
-                                      the optional PCAN bridge, and the trace
-                                      output. "Integration Guide" at the end
-                                      is the porting reference (key handling,
-                                      MCU storage, OD/USDO wiring, abort-code
-                                      mapping, threat model).
-
-  Cryptographic protocol (variant-neutral; applies to every current and
-  future variant):
-
-    fieldbus_sim_secure_tunnel_spec.txt   AAD, AEAD, nonce, keyid byte,
-                                          single + cyclic flows.
-                                          Authoritative for the byte
-                                          sequences each variant transports.
-
-  CANopen FD variant (TCP-loopback bus on port 5810; optional PCAN bridge):
-
-    fieldbus_sim_canopen_fd_spec.txt      device_id <-> node id and
-                                          data_id <-> (index, sub) mappings;
-                                          USDO PDU + reserved CAN IDs.
-    flow_diagrams.txt                     sequencediagram.org source for the
-                                          four protocol flows (single SRD/SWR
-                                          + cyclic SRD/SWR).
+    SOFA-UM-105.pdf
+                                      User manual. Chapters 4 and 5 are the
+                                      normative reference: every implemented
+                                      object dictionary entry (the CiA 720
+                                      C000h-C04Fh security range) and every
+                                      wire byte (AAD, AEAD, nonce, keyid byte,
+                                      USDO PDU, CAN IDs, and the single and
+                                      cyclic SRD/SWR flows). Chapters 6-8 cover
+                                      building, running and the command line.
+                                      Chapters 9-11 are the porting guide
+                                      (port hooks, OD/USDO wiring, key handling,
+                                      MCU storage, Ed25519 layer). The
+                                      appendices give the abort codes, the
+                                      configuration macros and the demo keys.
 
 /* EOF */

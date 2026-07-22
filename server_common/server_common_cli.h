@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, shared CLI helpers.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 22-JUL-2026
  *
  * Variant-agnostic argv parsing helpers. The variant owns the argv
  * loop (because variant-specific flags interleave with the common
@@ -21,6 +21,7 @@
  *   --color             cfg->color_pref = ALWAYS
  *   --no-color          cfg->color_pref = NEVER
  *   --key-file PATH     cfg->key_file_path = PATH
+ *   --od-file PATH      cfg->od_file_path = PATH
  *   --help              prints the variant's full usage via the
  *                       caller-supplied @p usage_fn and signals exit
  *

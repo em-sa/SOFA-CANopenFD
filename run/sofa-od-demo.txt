@@ -1,0 +1,18 @@
+# SOFA demo constant object dictionary (unsecured, readable cold).
+#
+# Loaded by the server with --od-file. Holds the constant entries the
+# device serves without security. Object 1018h is the identity that the
+# C018h authenticated-identification object returns under an AEAD tag.
+#
+# Format (one entry per line, hex tokens; '#' starts a comment):
+#     <index> <sub> <len> <data-byte> ...
+#
+# Object 1018h Identity (vendor id, product code, revision, serial).
+# NOTE: the vendor id below is a DEMO PLACEHOLDER, not a real CiA-assigned
+# vendor id. Replace it with your assigned vendor id for a real device.
+
+1018 00 01 04              # highest sub-index = 4
+1018 01 04 00 00 02 F1     # vendor id   (demo placeholder)
+1018 02 04 53 4F 46 41     # product code "SOFA"
+1018 03 04 00 01 00 01     # revision    V1.1
+1018 04 04 00 00 00 01     # serial      1

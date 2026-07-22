@@ -5,7 +5,7 @@
  * @brief   SOFA client_common, secure-frame trace formatter, impl.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 20-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -40,6 +40,7 @@ static bool        g_show_ts       = false;
 static const char *g_current_verb  = "";
 static uint8_t     g_secure_round  = 0u;
 static bool        g_secure_rx_open = false;
+static bool        g_force_defer    = false;
 
 #define COL_REQ   (g_use_color ? ANSI_BLUE       : "")
 #define COL_RSP   (g_use_color ? ANSI_MAGENTA    : "")
@@ -71,6 +72,37 @@ const char *fbsec_client_trace_col_rand(void)  { return COL_RAND;  }
 const char *fbsec_client_trace_col_tag(void)   { return COL_TAG;   }
 const char *fbsec_client_trace_col_plain(void) { return COL_PLAIN; }
 const char *fbsec_client_trace_col_abort(void) { return COL_ABORT; }
+
+const char *fbsec_client_abort_name(fbsec_abort_t code) {
+  switch (code) {
+    case FBSEC_ABORT_NONE:          return "none";
+    /* CiA 1301 Table 31. */
+    case FBSEC_ABORT_BAD_CMD:       return "unknown command specifier";
+    case FBSEC_ABORT_SEG_COUNTER:   return "USDO segment counter wrong";
+    case FBSEC_ABORT_DATA_SIZE:     return "incorrect data size";
+    case FBSEC_ABORT_SESSION_ID:    return "USDO session-ID wrong/unknown";
+    case FBSEC_ABORT_WRITE_ONLY:    return "read of a write-only entry";
+    case FBSEC_ABORT_READ_ONLY:     return "write to a read-only entry";
+    case FBSEC_ABORT_NO_OBJECT:     return "object does not exist";
+    case FBSEC_ABORT_NO_SUBINDEX:   return "sub-index does not exist";
+    case FBSEC_ABORT_TYPE_MISMATCH: return "data type / length mismatch";
+    case FBSEC_ABORT_LEN_TOO_HIGH:  return "length too high";
+    case FBSEC_ABORT_LEN_TOO_LOW:   return "length too low";
+    case FBSEC_ABORT_INTERNAL:      return "internal failure";
+    case FBSEC_ABORT_DEVICE_STATE:  return "refused by device state / lock";
+    /* SOFA block C0h..CFh. */
+    case FBSEC_ABORT_TAG_VERIFY:    return "AEAD tag verification failed";
+    case FBSEC_ABORT_SIG_VERIFY:    return "Ed25519 signature failed";
+    case FBSEC_ABORT_VOUCHER:       return "ownership voucher rejected";
+    case FBSEC_ABORT_ROLE_DENIED:   return "role policy denied";
+    case FBSEC_ABORT_KEY_ID:        return "key identifier not accepted";
+    case FBSEC_ABORT_NO_SESSION:    return "secure session unknown/expired";
+    case FBSEC_ABORT_POLL_COUNTER:  return "cyclic poll counter desync";
+    case FBSEC_ABORT_KEY_BUDGET:    return "key frame budget reached";
+    case FBSEC_ABORT_NOT_BUILT:     return "feature not compiled in";
+    default:                        return "reserved";
+  }
+}
 
 void fbsec_client_trace_print_legend(void) {
   if (!g_use_color) {
@@ -234,7 +266,7 @@ void fbsec_client_trace_secure_frame(bool          is_tx,
                                      uint32_t      data_id,
                                      const uint8_t *payload,
                                      uint32_t      plen,
-                                     uint32_t      status) {
+                                     fbsec_abort_t status) {
   if (g_quiet) {
     return;
   }
@@ -260,8 +292,9 @@ void fbsec_client_trace_secure_frame(bool          is_tx,
          label,
          (unsigned)(src & 0xFFu), (unsigned)(dst & 0xFFu), id24,
          COL_END);
-  if (!is_tx && status != 0u) {
-    printf(" %sabort 0x%08X%s\n", COL_ABORT, (unsigned)status, COL_END);
+  if (!is_tx && status != FBSEC_ABORT_NONE) {
+    printf(" %sabort 0x%02X (%s)%s\n", COL_ABORT, (unsigned)status,
+           fbsec_client_abort_name(status), COL_END);
     return;
   }
   if (plen > 0u && payload != NULL) {
@@ -277,11 +310,17 @@ void fbsec_client_trace_secure_frame(bool          is_tx,
   }
 
   /* Defer \n for srd / pollrd RX shapes so the runner can append
-     " Plain:..." inline. All other rows close here. */
+     " Plain:..." inline, or whenever force-defer is set (the security scan
+     appends " ; <interpretation>"). All other rows close here. */
   const uint16_t TAGN = (uint16_t)FBSEC_AEAD_TAG_SIZE;
-  bool defer = !is_tx && payload != NULL
-            && ((strcmp(g_current_verb, "srd") == 0    && plen >= TAGN) ||
-                (strcmp(g_current_verb, "pollrd") == 0 && plen >= 1u + (uint32_t)TAGN));
+  bool defer;
+  if (g_force_defer && !is_tx) {
+    defer = true;
+  } else {
+    defer = !is_tx && payload != NULL
+         && ((strcmp(g_current_verb, "srd") == 0    && plen >= TAGN) ||
+             (strcmp(g_current_verb, "pollrd") == 0 && plen >= 1u + (uint32_t)TAGN));
+  }
   if (defer) {
     g_secure_rx_open = true;
   } else {
@@ -306,6 +345,21 @@ void fbsec_client_trace_close_with_plain(uint32_t data_id,
 void fbsec_client_trace_close_no_plain(void) {
   if (!g_secure_rx_open) {
     return;
+  }
+  printf("\n");
+  g_secure_rx_open = false;
+}
+
+void fbsec_client_trace_set_force_defer(bool on) {
+  g_force_defer = on;
+}
+
+void fbsec_client_trace_close_with_note(const char *note) {
+  if (!g_secure_rx_open) {
+    return;
+  }
+  if (note != NULL && note[0] != '\0') {
+    printf(" %s;%s %s", COL_HDR, COL_END, note);
   }
   printf("\n");
   g_secure_rx_open = false;

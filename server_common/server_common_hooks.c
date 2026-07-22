@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, port hooks + demo buffers, impl.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.2 of 22-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -14,6 +14,7 @@
 
 #include "server_common_hooks.h"
 #include "server_common_keys.h"
+#include "server_common_const_od.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -36,12 +37,11 @@ static uint8_t g_value[FBSEC_SERVER_ENTRY_VALUE_LEN] = {
   0x00u, 0x11u, 0x22u, 0x33u
 };
 
-/* SECURE_RO 0xC0180000 backing store. Filled by
-   @ref fbsec_server_hooks_prefill_secure_ro with
-   <my_dev BE> || 02 03 .. 0F (16 bytes). */
+/* C018h (0xC0180000) backing store. Filled by
+   @ref fbsec_server_hooks_load_identity with the 1018h identity quad. */
 static uint8_t g_secure_ro[FBSEC_SERVER_ENTRY_SECURE_LEN];
 
-/* SECURE_WO 0xC0160000 backing store. */
+/* SECURE_WO 0x20160000 backing store (16-byte demo write target). */
 static uint8_t g_secure_wo[FBSEC_SERVER_ENTRY_SECURE_LEN];
 
 /* ---- Setup / accessors ----------------------------------------------- */
@@ -50,13 +50,8 @@ void fbsec_server_hooks_set_my_dev(uint16_t my_dev) {
   g_my_dev = my_dev;
 }
 
-bool fbsec_server_hooks_prefill_secure_ro(uint16_t my_dev) {
-  g_secure_ro[0] = (uint8_t)((my_dev >> 8) & 0xFFu);
-  g_secure_ro[1] = (uint8_t)( my_dev       & 0xFFu);
-  for (uint8_t i = 2u; i < FBSEC_SERVER_ENTRY_SECURE_LEN; ++i) {
-    g_secure_ro[i] = i;
-  }
-  return true;
+bool fbsec_server_hooks_load_identity(void) {
+  return fbsec_const_od_get_identity(g_secure_ro);
 }
 
 const uint8_t *fbsec_server_hooks_value(void) {
@@ -139,13 +134,13 @@ bool fbsec_sod_port_role_allowed(fbsec_sod_op_t op,
 
 /* ---- Port hook: read-before ------------------------------------------ */
 
-uint32_t fbsec_sod_port_read_before(uint32_t data_id,
-                                    uint8_t *dst,
-                                    uint16_t *len) {
+fbsec_abort_t fbsec_sod_port_read_before(uint32_t data_id,
+                                         uint8_t *dst,
+                                         uint16_t *len) {
   if (data_id == FBSEC_SERVER_ENTRY_SRD_DATA_ID) {
     memcpy(dst, g_secure_ro, FBSEC_SERVER_ENTRY_SECURE_LEN);
     *len = FBSEC_SERVER_ENTRY_SECURE_LEN;
-    return 0u;
+    return FBSEC_ABORT_NONE;
   }
   if (data_id == FBSEC_SERVER_ENTRY_RD_DATA_ID) {
     /* Return current value, then bump (big-endian +1) so successive
@@ -162,32 +157,32 @@ uint32_t fbsec_sod_port_read_before(uint32_t data_id,
     g_value[1] = (uint8_t)((v >> 16) & 0xFFu);
     g_value[2] = (uint8_t)((v >>  8) & 0xFFu);
     g_value[3] = (uint8_t)( v        & 0xFFu);
-    return 0u;
+    return FBSEC_ABORT_NONE;
   }
   *len = 0u;
-  return FBSEC_SOD_ABORT_UNSUPPORTED;
+  return FBSEC_ABORT_NO_OBJECT;
 }
 
 /* ---- Port hook: write-after ------------------------------------------ */
 
-uint32_t fbsec_sod_port_write_after(uint32_t       data_id,
-                                    const uint8_t *src,
-                                    uint16_t       len) {
+fbsec_abort_t fbsec_sod_port_write_after(uint32_t       data_id,
+                                         const uint8_t *src,
+                                         uint16_t       len) {
   if (data_id == FBSEC_SERVER_ENTRY_SWR_DATA_ID) {
     if (len != FBSEC_SERVER_ENTRY_SECURE_LEN) {
-      return FBSEC_SOD_ABORT_TYPEMISMATCH;
+      return FBSEC_ABORT_TYPE_MISMATCH;
     }
     memcpy(g_secure_wo, src, FBSEC_SERVER_ENTRY_SECURE_LEN);
-    return 0u;
+    return FBSEC_ABORT_NONE;
   }
   if (data_id == FBSEC_SERVER_ENTRY_WR_DATA_ID) {
     if (len != FBSEC_SERVER_ENTRY_VALUE_LEN) {
-      return FBSEC_SOD_ABORT_TYPEMISMATCH;
+      return FBSEC_ABORT_TYPE_MISMATCH;
     }
     memcpy(g_value, src, FBSEC_SERVER_ENTRY_VALUE_LEN);
-    return 0u;
+    return FBSEC_ABORT_NONE;
   }
-  return FBSEC_SOD_ABORT_UNSUPPORTED;
+  return FBSEC_ABORT_NO_OBJECT;
 }
 
 /* EOF */

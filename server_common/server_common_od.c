@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, secure OD setup, implementation.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 22-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -15,31 +15,51 @@
 #include "server_common_od.h"
 #include "server_common_hooks.h"
 #include "server_common_keys.h"
+#include "server_common_const_od.h"
 
 #include <stdio.h>
 
 #include "fbsec_secure_od.h"
 
-int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path) {
+#if FBSEC_FEATURE_ASYM
+#include "server_common_asym.h"
+#endif
+
+int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path,
+                         const char *od_file_path) {
+  bool identity_ok;
+
   fbsec_sod_init();
   fbsec_server_hooks_set_my_dev(my_dev);
 
-  (void)fbsec_server_hooks_prefill_secure_ro(my_dev); /* always succeeds (see hooks.h) */
+#if FBSEC_FEATURE_ASYM
+  fbsec_server_asym_init();   /* device identity store (IDevID, anchor, ...) */
+#endif
 
-  /* All four default entries leave .key_id = FBSEC_SOD_KEY_NONE so any
-     provisioned key passes the AEAD step; the actual role policy
-     (Provisioning Session Key + Integrator Session Key can read/write;
-     Operator Session Key can read but not write) lives in
-     fbsec_sod_port_role_allowed. value_type stays at the default (BIN)
-     so trace renders as hex. */
+  /* Load the constant, unsecured OD entries (object 1018h etc.) before
+     anything reads them. C018h is served from the 1018h identity quad,
+     so it is only registered when that identity is present. */
+  fbsec_const_od_init();
+  if (od_file_path != NULL) {
+    if (fbsec_const_od_load_file(od_file_path) != 0) {
+      return -1;
+    }
+  }
+  identity_ok = fbsec_server_hooks_load_identity();
+
+  /* The demo entries leave .key_id = FBSEC_SOD_KEY_NONE so any provisioned
+     key passes the AEAD step; the actual role policy (Provisioning Session
+     Key + Integrator Session Key can read/write; Operator Session Key can
+     read but not write) lives in fbsec_sod_port_role_allowed. value_type
+     stays at the default (BIN) so trace renders as hex. */
   fbsec_sod_entry_t e_sro = {
-    .data_id      = FBSEC_SERVER_ENTRY_SRD_DATA_ID,
+    .data_id      = FBSEC_SERVER_ENTRY_SRD_DATA_ID,   /* C018h identity */
     .key_id       = FBSEC_SOD_KEY_NONE,
     .access_flags = FBSEC_SOD_ACCESS_SECURE_RO,
     .data_len     = FBSEC_SERVER_ENTRY_SECURE_LEN
   };
   fbsec_sod_entry_t e_swo = {
-    .data_id      = FBSEC_SERVER_ENTRY_SWR_DATA_ID,
+    .data_id      = FBSEC_SERVER_ENTRY_SWR_DATA_ID,   /* 2016h demo write */
     .key_id       = FBSEC_SOD_KEY_NONE,
     .access_flags = FBSEC_SOD_ACCESS_SECURE_WO,
     .data_len     = FBSEC_SERVER_ENTRY_SECURE_LEN
@@ -56,8 +76,11 @@ int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path) {
     .access_flags = FBSEC_SOD_ACCESS_SECURE_WO,
     .data_len     = FBSEC_SERVER_ENTRY_VALUE_LEN
   };
-  if (!fbsec_sod_register_entry(&e_sro) || !fbsec_sod_register_entry(&e_swo)
-      || !fbsec_sod_register_entry(&e_pro) || !fbsec_sod_register_entry(&e_pwo)) {
+  /* C018h is registered only when its 1018h identity is loaded. */
+  if ((identity_ok && !fbsec_sod_register_entry(&e_sro))
+      || !fbsec_sod_register_entry(&e_swo)
+      || !fbsec_sod_register_entry(&e_pro)
+      || !fbsec_sod_register_entry(&e_pwo)) {
     fprintf(stderr, "server_common: failed to register secure entries\n");
     return -1;
   }

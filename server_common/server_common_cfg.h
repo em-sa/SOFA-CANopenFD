@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, shared types (cfg, callbacks).
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.2 of 22-JUL-2026
  *
  * Header-only declarations of the configuration record populated by
  * the variant-agnostic CLI helpers (`server_common_cli.h`) and the
@@ -25,6 +25,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+
+#include "fbsec_abort.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,6 +54,7 @@ typedef struct fbsec_server_cfg_t {
   bool                      quiet;         /**< suppress per-request log on stdout  */
   fbsec_server_color_pref_t color_pref;
   const char               *key_file_path; /**< NULL if --key-file not given        */
+  const char               *od_file_path;  /**< NULL if --od-file not given         */
 } fbsec_server_cfg_t;
 
 /**
@@ -66,7 +69,8 @@ typedef struct fbsec_server_cfg_t {
  * @param user      opaque pointer the variant passed to dispatch.
  * @param to_dev    request's src_device_id (becomes reply dst).
  * @param data_id   echoes the request's data_id.
- * @param status    0 = success / DEFER ACK; non-zero = SDO abort code.
+ * @param status    FBSEC_ABORT_NONE = success / DEFER ACK; otherwise
+ *                  the CiA 1301 USDO abort code (see fbsec_abort.h).
  * @param data      bytes to append after the variant's status header
  *                  (read result). NULL when @p data_len == 0.
  * @param data_len  length of @p data in bytes.
@@ -77,7 +81,7 @@ typedef struct fbsec_server_cfg_t {
 typedef int (*fbsec_send_reply_fn_t)(void          *user,
                                    uint16_t       to_dev,
                                    uint32_t       data_id,
-                                   uint32_t       status,
+                                   fbsec_abort_t  status,
                                    const uint8_t *data,
                                    uint16_t       data_len);
 

@@ -5,7 +5,7 @@
  * @brief   SOFA server-side secure object dictionary, implementation.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.1 of 06-MAY-2026
+ * @version V1.3 of 22-JUL-2026
  *
  * Wire-keyid byte rule: the keyid is carried only on CLIENT REQUESTS,
  * never on server responses, and where it appears it is the FIRST byte
@@ -60,7 +60,7 @@
  *       refresh armed_at.
  *       -> OK with reply = counter_low[1] || ciphertext[N] || tag[8]
  *     If counter mismatch: drop (no state change), return abort
- *     FBSEC_SOD_ABORT_TRANSFER without tearing down the slot.
+ *     FBSEC_ABORT_POLL_COUNTER without tearing down the slot.
  *     If counter reaches FBSEC_AEAD_KEY_USE_LIMIT: tear down, abort.
  *
  *   SECURE_WO challenge with bit 6 of key_id set (1 byte; the byte is
@@ -95,13 +95,23 @@
 /* On-wire challenge sizes. */
 #define READ_CHALLENGE_LEN        ((uint16_t)(1u + FBSEC_AEAD_RAND_SIZE))       /* 13 */
 #define WRITE_CHALLENGE_LEN       ((uint16_t)FBSEC_AEAD_RAND_SIZE)              /* 12 */
+/* Ed25519 signature trailer appended to the establishment verb in
+   signed-FBsec mode (spec 11.6.5); zero when the mode is not built. */
+#if FBSEC_ASYM_SIGNED_FBSEC
+#define SIGNED_TRAILER_LEN        ((uint16_t)FBSEC_ASYM_SIG_SIZE)
+#else
+#define SIGNED_TRAILER_LEN        0u
+#endif
+
 /* Pre-sealed single-shot read response shape: server_random[R] ||
-   cipher[N] || tag[T]. The cyclic-capable arm reply is byte-identical
-   to the plain single-shot reply (no session_id on the wire); cyclic
-   state lives in the slot and is keyed by (client_dev, data_id). */
+   cipher[N] || tag[T] (|| SIG[64] in signed-FBsec mode). The cyclic-
+   capable arm reply is byte-identical to the plain single-shot reply
+   (no session_id on the wire); cyclic state lives in the slot and is
+   keyed by (client_dev, data_id). */
 #define READ_RESPONSE_MAX         ((uint16_t)(FBSEC_AEAD_RAND_SIZE \
                                               + FBSEC_AEAD_MAX_PROTECTED \
-                                              + FBSEC_AEAD_TAG_SIZE))
+                                              + FBSEC_AEAD_TAG_SIZE \
+                                              + SIGNED_TRAILER_LEN))
 
 /* ---- Internal types --------------------------------------------------- */
 
@@ -156,9 +166,12 @@ static write_state_t    g_write_slot[FBSEC_SOD_MAX_ENTRIES];
 #endif
 
 /* Key slots 0..N-1; index 0 is the FBSEC_SOD_KEY_NONE sentinel and unused.
-   key_id 1 -> g_keys[1], etc. */
+   key_id 1 -> g_keys[1], etc. g_key_id_val holds the non-secret U32 key
+   id / version reported by C011h; it is independent of the slot's role
+   number and defaults to the slot number when not set explicitly. */
 static uint8_t          g_keys[FBSEC_SOD_KEY_SLOTS + 1u][FBSEC_AEAD_KEY_SIZE];
 static bool             g_key_present[FBSEC_SOD_KEY_SLOTS + 1u];
+static uint32_t         g_key_id_val[FBSEC_SOD_KEY_SLOTS + 1u];
 
 /* ---- Lifecycle / registry -------------------------------------------- */
 
@@ -172,6 +185,7 @@ void fbsec_sod_init(void) {
 #endif
   memset(g_keys,        0, sizeof g_keys);
   memset(g_key_present, 0, sizeof g_key_present);
+  memset(g_key_id_val,  0, sizeof g_key_id_val);
   g_registry_count  = 0u;
 }
 
@@ -204,18 +218,30 @@ const fbsec_sod_entry_t *fbsec_sod_find_entry(uint32_t data_id) {
 
 /* ---- Key store ------------------------------------------------------- */
 
-bool fbsec_sod_set_key(uint8_t key_id, const uint8_t key[FBSEC_AEAD_KEY_SIZE]) {
+bool fbsec_sod_set_key_ex(uint8_t key_id, const uint8_t key[FBSEC_AEAD_KEY_SIZE],
+                          uint32_t id_value) {
   if (key == NULL) return false;
   if (key_id < 1u || key_id > FBSEC_SOD_KEY_SLOTS) return false;
   if (g_key_present[key_id]) return false;     /* write-once */
   memcpy(g_keys[key_id], key, FBSEC_AEAD_KEY_SIZE);
   g_key_present[key_id] = true;
+  g_key_id_val[key_id]  = id_value;
   return true;
+}
+
+bool fbsec_sod_set_key(uint8_t key_id, const uint8_t key[FBSEC_AEAD_KEY_SIZE]) {
+  /* Back-compatible: the non-secret key id defaults to the slot number. */
+  return fbsec_sod_set_key_ex(key_id, key, (uint32_t)key_id);
 }
 
 bool fbsec_sod_has_key(uint8_t key_id) {
   if (key_id < 1u || key_id > FBSEC_SOD_KEY_SLOTS) return false;
   return g_key_present[key_id];
+}
+
+uint32_t fbsec_sod_get_key_id_value(uint8_t key_id) {
+  if (key_id < 1u || key_id > FBSEC_SOD_KEY_SLOTS) return 0u;
+  return g_key_present[key_id] ? g_key_id_val[key_id] : 0u;
 }
 
 static const uint8_t *get_key(uint8_t key_id) {
@@ -236,6 +262,27 @@ static bool slot_is_fresh(uint16_t armed_at) {
   return slot_is_fresh_for(armed_at,
                            (uint16_t)FBSEC_SOD_CHALLENGE_TIMEOUT_MS);
 }
+
+#if FBSEC_FEATURE_WRITE || (FBSEC_FEATURE_CYCLIC && FBSEC_FEATURE_READ)
+/* ---- Length-mismatch classification ---------------------------------- */
+
+/**
+ * @brief Pick the CiA 1301 Table 31 code for a wrong request length.
+ *
+ * Table 31 distinguishes "length of service parameter too high" (37h)
+ * from "too low" (38h) wherever the receiver can tell; 36h is the
+ * generic "data type / length does not match".
+ *
+ * @param got   received length in bytes.
+ * @param want  expected length in bytes.
+ * @return 37h, 38h, or 36h when the two are equal (never expected).
+ */
+static fbsec_abort_t length_abort(uint16_t got, uint16_t want) {
+  if (got > want) { return FBSEC_ABORT_LEN_TOO_HIGH; }
+  if (got < want) { return FBSEC_ABORT_LEN_TOO_LOW; }
+  return FBSEC_ABORT_TYPE_MISMATCH;
+}
+#endif
 
 #if FBSEC_FEATURE_CYCLIC
 static bool session_is_fresh(uint16_t armed_at) {
@@ -274,7 +321,7 @@ static fbsec_sod_status_t arm_read_response(
   uint8_t                 *reply,
   uint16_t                 reply_max,
   uint16_t                *reply_len,
-  uint32_t                *out_abort)
+  fbsec_abort_t           *out_abort)
 {
   /* Wire shape: key_id[1] || client_random[R]. The keyid is the first
      byte of every client request that carries it. */
@@ -297,13 +344,17 @@ static fbsec_sod_status_t arm_read_response(
      never silently downgrade to single-shot when it expected cyclic. */
 #if FBSEC_FEATURE_CYCLIC
   if (FBSEC_AEAD_KEYID_RESERVED(key_id) != 0u) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_KEY_ID;
     return FBSEC_SOD_ABORT;
   }
 #else
-  if (FBSEC_AEAD_KEYID_RESERVED(key_id) != 0u
-      || (key_id & 0x40u) != 0u) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+  if (FBSEC_AEAD_KEYID_RESERVED(key_id) != 0u) {
+    *out_abort = FBSEC_ABORT_KEY_ID;
+    return FBSEC_SOD_ABORT;
+  }
+  if ((key_id & 0x40u) != 0u) {
+    /* Cyclic-arm requested but the cyclic feature was stripped. */
+    *out_abort = FBSEC_ABORT_NOT_BUILT;
     return FBSEC_SOD_ABORT;
   }
 #endif
@@ -315,21 +366,21 @@ static fbsec_sod_status_t arm_read_response(
      AAD verbatim; the bare base id is the lookup key against
      entry->key_id. */
   if (entry->key_id != FBSEC_SOD_KEY_NONE && kid_base != entry->key_id) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_KEY_ID;
     return FBSEC_SOD_ABORT;
   }
   const uint8_t *key = get_key(kid_base);
   if (key == NULL) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_KEY_ID;
     return FBSEC_SOD_ABORT;
   }
 
   if (!fbsec_sod_port_access_allowed(FBSEC_SOD_OP_READ, entry->data_id)) {
-    *out_abort = FBSEC_SOD_ABORT_LOCKED;
+    *out_abort = FBSEC_ABORT_DEVICE_STATE;
     return FBSEC_SOD_ABORT;
   }
   if (!fbsec_sod_port_role_allowed(FBSEC_SOD_OP_READ, kid_base, entry->data_id)) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_ROLE_DENIED;
     return FBSEC_SOD_ABORT;
   }
 
@@ -344,14 +395,14 @@ static fbsec_sod_status_t arm_read_response(
      session_id[2] in the Pass-2 response. */
   uint8_t  plaintext[FBSEC_AEAD_MAX_PROTECTED];
   uint16_t plain_len = entry->data_len;
-  uint32_t hook_rc = fbsec_sod_port_read_before(entry->data_id,
+  fbsec_abort_t hook_rc = fbsec_sod_port_read_before(entry->data_id,
                                               plaintext, &plain_len);
-  if (hook_rc != 0u) {
+  if (hook_rc != FBSEC_ABORT_NONE) {
     *out_abort = hook_rc;
     return FBSEC_SOD_ABORT;
   }
   if (plain_len != entry->data_len) {
-    *out_abort = FBSEC_SOD_ABORT_GENERAL;
+    *out_abort = FBSEC_ABORT_INTERNAL;
     return FBSEC_SOD_ABORT;
   }
 
@@ -360,7 +411,7 @@ static fbsec_sod_status_t arm_read_response(
      unique whenever EITHER side has a sound RNG. */
   uint8_t server_random[FBSEC_AEAD_RAND_SIZE];
   if (!fbsec_sod_port_random(server_random, FBSEC_AEAD_RAND_SIZE)) {
-    *out_abort = FBSEC_SOD_ABORT_GENERAL;
+    *out_abort = FBSEC_ABORT_INTERNAL;
     return FBSEC_SOD_ABORT;
   }
   uint8_t nonce[FBSEC_AEAD_NONCE_SIZE];
@@ -383,13 +434,37 @@ static fbsec_sod_status_t arm_read_response(
                      plaintext, plain_len,
                      &slot->prepared[cipher_off],
                      &slot->prepared[cipher_off + plain_len])) {
-    *out_abort = FBSEC_SOD_ABORT_GENERAL;
+    *out_abort = FBSEC_ABORT_INTERNAL;
     return FBSEC_SOD_ABORT;
   }
   slot->in_use       = true;
   slot->client_dev   = client_dev;
   slot->armed_at     = fbsec_sod_port_get_time_ms();
   slot->prepared_len = (uint16_t)(cipher_off + plain_len + FBSEC_AEAD_TAG_SIZE);
+
+#if FBSEC_ASYM_SIGNED_FBSEC
+  /* Signed-FBsec (spec 11.6.5): the server proves its runtime identity by
+     appending an Ed25519 signature over the domain-separated transcript
+     that binds both randoms and the addressing context. The AEAD tag is
+     what a client verifies FIRST; this signature is the second factor. */
+  if (FBSEC_AEAD_KEYID_SIGNED(key_id)) {
+    uint8_t  ctx[FBSEC_ASYM_FBSEC_CTX_LEN];
+    uint8_t  transcript[FBSEC_ASYM_TRANSCRIPT_OVERHEAD + FBSEC_ASYM_FBSEC_CTX_LEN];
+    uint16_t clen = fbsec_asym_fbsec_context(entry->data_id,
+                                             fbsec_sod_port_get_device_id(), client_dev,
+                                             client_random, server_random,
+                                             ctx, (uint16_t)sizeof ctx);
+    uint16_t tlen = fbsec_asym_transcript(FBSEC_ASYM_RD_SIGNED_FBSEC_S2C, ctx, clen,
+                                          transcript, (uint16_t)sizeof transcript);
+    if ((clen == 0u) || (tlen == 0u) ||
+        !fbsec_sod_port_sign(FBSEC_ASYM_RD_SIGNED_FBSEC_S2C, transcript, tlen,
+                             &slot->prepared[slot->prepared_len])) {
+      *out_abort = FBSEC_ABORT_INTERNAL;
+      return FBSEC_SOD_ABORT;
+    }
+    slot->prepared_len = (uint16_t)(slot->prepared_len + FBSEC_ASYM_SIG_SIZE);
+  }
+#endif
 
 #if FBSEC_FEATURE_CYCLIC
   /* Cyclic-capable single SRD: keep the prepared response byte-
@@ -433,10 +508,10 @@ static fbsec_sod_status_t arm_write_challenge(
   uint8_t                 *reply,
   uint16_t                 reply_max,
   uint16_t                *reply_len,
-  uint32_t                *out_abort)
+  fbsec_abort_t           *out_abort)
 {
   if (!fbsec_sod_port_access_allowed(FBSEC_SOD_OP_WRITE, entry->data_id)) {
-    *out_abort = FBSEC_SOD_ABORT_LOCKED;
+    *out_abort = FBSEC_ABORT_DEVICE_STATE;
     return FBSEC_SOD_ABORT;
   }
 
@@ -447,7 +522,7 @@ static fbsec_sod_status_t arm_write_challenge(
 #if FBSEC_FEATURE_CYCLIC
     /* Reserved bits (5..4) must be 0. */
     if (FBSEC_AEAD_KEYID_RESERVED(wire_key_id) != 0u) {
-      *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+      *out_abort = FBSEC_ABORT_KEY_ID;
       return FBSEC_SOD_ABORT;
     }
     is_cyclic = FBSEC_AEAD_KEYID_IS_CYCLIC(wire_key_id);
@@ -455,20 +530,20 @@ static fbsec_sod_status_t arm_write_challenge(
        arming under the new flow; reject single-shot keyids that
        arrive here (they belong on Pass 2). */
     if (!is_cyclic) {
-      *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+      *out_abort = FBSEC_ABORT_KEY_ID;
       return FBSEC_SOD_ABORT;
     }
     uint8_t kid_base = FBSEC_AEAD_KEYID_BASE(wire_key_id);
     if (entry->key_id != FBSEC_SOD_KEY_NONE && kid_base != entry->key_id) {
-      *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+      *out_abort = FBSEC_ABORT_KEY_ID;
       return FBSEC_SOD_ABORT;
     }
     if (get_key(kid_base) == NULL) {
-      *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+      *out_abort = FBSEC_ABORT_KEY_ID;
       return FBSEC_SOD_ABORT;
     }
     if (!fbsec_sod_port_role_allowed(FBSEC_SOD_OP_WRITE, kid_base, entry->data_id)) {
-      *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+      *out_abort = FBSEC_ABORT_ROLE_DENIED;
       return FBSEC_SOD_ABORT;
     }
 #else
@@ -476,7 +551,7 @@ static fbsec_sod_status_t arm_write_challenge(
        cyclic gone, bit 6 also joins the reserved set, so we don't even
        need to parse the wire byte. */
     (void)wire_key_id;
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_NOT_BUILT;
     return FBSEC_SOD_ABORT;
 #endif
   }
@@ -485,13 +560,13 @@ static fbsec_sod_status_t arm_write_challenge(
      just server_random[R]. The cyclic vs single-shot distinction
      lives in the slot (bit 6 of the wire keyid drives is_cyclic). */
   if (reply_max < WRITE_CHALLENGE_LEN) {
-    *out_abort = FBSEC_SOD_ABORT_GENERAL;
+    *out_abort = FBSEC_ABORT_INTERNAL;
     return FBSEC_SOD_ABORT;
   }
 
   uint8_t random_buf[FBSEC_AEAD_RAND_SIZE];
   if (!fbsec_sod_port_random(random_buf, FBSEC_AEAD_RAND_SIZE)) {
-    *out_abort = FBSEC_SOD_ABORT_GENERAL;
+    *out_abort = FBSEC_ABORT_INTERNAL;
     return FBSEC_SOD_ABORT;
   }
 
@@ -528,27 +603,39 @@ static fbsec_sod_status_t verify_and_apply_write(
   uint8_t                 *reply,
   uint16_t                 reply_max,
   uint16_t                *reply_len,
-  uint32_t                *out_abort)
+  fbsec_abort_t           *out_abort)
 {
   write_state_t *slot = &g_write_slot[slot_idx];
   if (!slot->in_use) {
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_NO_SESSION;
     return FBSEC_SOD_ABORT;
   }
   if (!slot_is_fresh(slot->armed_at)) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_NO_SESSION;
     return FBSEC_SOD_ABORT;
   }
   /* Pass-2 wire shape:
-       keyid[1] || client_random[R] || ciphertext[N] || tag[T] */
+       keyid[1] || client_random[R] || ciphertext[N] || tag[T]
+       (|| SIG[64] in signed-FBsec mode, flagged by keyid bit 5). */
   uint16_t expected = (uint16_t)(1u + FBSEC_AEAD_RAND_SIZE
                                  + entry->data_len + FBSEC_AEAD_TAG_SIZE);
-  if (req_len != expected) {
+#if FBSEC_ASYM_SIGNED_FBSEC
+  bool     signed_req    = FBSEC_AEAD_KEYID_SIGNED(req[0]);
+  uint16_t expected_full = signed_req
+                         ? (uint16_t)(expected + FBSEC_ASYM_SIG_SIZE) : expected;
+  if (req_len != expected_full) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_TYPEMISMATCH;
+    *out_abort = length_abort(req_len, expected_full);
     return FBSEC_SOD_ABORT;
   }
+#else
+  if (req_len != expected) {
+    slot->in_use = false;
+    *out_abort = length_abort(req_len, expected);
+    return FBSEC_SOD_ABORT;
+  }
+#endif
 
   /* Pull the keyid from the wire. Reserved bits (5..4) must be 0; bit
      6 (cyclic-arm) is OPTIONAL on Pass 2; when set, the slot stays
@@ -558,13 +645,13 @@ static fbsec_sod_status_t verify_and_apply_write(
   uint8_t  wire_key_id = req[0];
   if (FBSEC_AEAD_KEYID_RESERVED(wire_key_id) != 0u) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_KEY_ID;
     return FBSEC_SOD_ABORT;
   }
   uint8_t kid_base = FBSEC_AEAD_KEYID_BASE(wire_key_id);
   if (entry->key_id != FBSEC_SOD_KEY_NONE && kid_base != entry->key_id) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_KEY_ID;
     return FBSEC_SOD_ABORT;
   }
   const uint8_t *client_random = &req[1];
@@ -574,12 +661,12 @@ static fbsec_sod_status_t verify_and_apply_write(
   const uint8_t *key           = get_key(kid_base);
   if (key == NULL) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_KEY_ID;
     return FBSEC_SOD_ABORT;
   }
   if (!fbsec_sod_port_role_allowed(FBSEC_SOD_OP_WRITE, kid_base, entry->data_id)) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_ROLE_DENIED;
     return FBSEC_SOD_ABORT;
   }
   slot->key_id = wire_key_id;     /* now known; recorded for trace/AAD */
@@ -600,12 +687,38 @@ static fbsec_sod_status_t verify_and_apply_write(
                      tag,
                      plaintext)) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_TAGFAIL;
+    *out_abort = FBSEC_ABORT_TAG_VERIFY;
     return FBSEC_SOD_ABORT;
   }
-  uint32_t hook_rc = fbsec_sod_port_write_after(entry->data_id,
+
+#if FBSEC_ASYM_SIGNED_FBSEC
+  /* Signed-FBsec (spec 11.6.5): the AEAD tag verified above; now verify
+     the client's Ed25519 signature over the transcript before committing.
+     Tag-first, signature-second preserves the DoS posture. */
+  if (signed_req) {
+    const uint8_t *sig = &req[expected];   /* trailer after keyid|R|cipher|tag */
+    fbsec_pubkey_t pk;
+    uint8_t  ctx[FBSEC_ASYM_FBSEC_CTX_LEN];
+    uint8_t  transcript[FBSEC_ASYM_TRANSCRIPT_OVERHEAD + FBSEC_ASYM_FBSEC_CTX_LEN];
+    uint16_t clen = fbsec_asym_fbsec_context(entry->data_id,
+                                             fbsec_sod_port_get_device_id(), slot->client_dev,
+                                             client_random, slot->server_random,
+                                             ctx, (uint16_t)sizeof ctx);
+    uint16_t tlen = fbsec_asym_transcript(FBSEC_ASYM_RD_SIGNED_FBSEC_C2S, ctx, clen,
+                                          transcript, (uint16_t)sizeof transcript);
+    if (!fbsec_sod_port_peer_pubkey(slot->client_dev, pk.pub) ||
+        (clen == 0u) || (tlen == 0u) ||
+        !fbsec_asym_verify(&pk, transcript, tlen, sig)) {
+      slot->in_use = false;
+      *out_abort = FBSEC_ABORT_SIG_VERIFY;
+      return FBSEC_SOD_ABORT;
+    }
+  }
+#endif
+
+  fbsec_abort_t hook_rc = fbsec_sod_port_write_after(entry->data_id,
                                               plaintext, entry->data_len);
-  if (hook_rc != 0u) {
+  if (hook_rc != FBSEC_ABORT_NONE) {
     slot->in_use = false;
     *out_abort = hook_rc;
     return FBSEC_SOD_ABORT;
@@ -656,15 +769,15 @@ static bool poll_check_counter(
   uint32_t  current_counter,
   uint8_t   wire_counter_low,
   uint32_t *expected_full_out,
-  uint32_t *out_abort)
+  fbsec_abort_t *out_abort)
 {
   if (current_counter >= FBSEC_AEAD_KEY_USE_LIMIT) {
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_KEY_BUDGET;
     return false;
   }
   uint32_t expected = current_counter + 1u;
   if (((uint8_t)(expected & 0xFFu)) != wire_counter_low) {
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_POLL_COUNTER;
     return false;
   }
   *expected_full_out = expected;
@@ -681,66 +794,65 @@ static fbsec_sod_status_t handle_read_poll(
   uint8_t                 *reply,
   uint16_t                 reply_max,
   uint16_t                *reply_len,
-  uint32_t                *out_abort)
+  fbsec_abort_t           *out_abort)
 {
   read_state_t *slot = &g_read_slot[slot_idx];
   if (!slot->in_use || !slot->cyclic) {
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_NO_SESSION;
     return FBSEC_SOD_ABORT;
   }
   if (slot->client_dev != client_dev) {
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_NO_SESSION;
     return FBSEC_SOD_ABORT;
   }
   if (!session_is_fresh(slot->armed_at)) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_NO_SESSION;
     return FBSEC_SOD_ABORT;
   }
   if (req_len != 1u) {
-    *out_abort = FBSEC_SOD_ABORT_TYPEMISMATCH;
+    *out_abort = length_abort(req_len, 1u);
     return FBSEC_SOD_ABORT;
   }
   uint16_t needed = (uint16_t)(1u + entry->data_len + FBSEC_AEAD_TAG_SIZE);
   if (reply_max < needed) {
-    *out_abort = FBSEC_SOD_ABORT_GENERAL;
+    *out_abort = FBSEC_ABORT_INTERNAL;
     return FBSEC_SOD_ABORT;
   }
 
   uint32_t expected_counter = 0u;
   if (!poll_check_counter(slot->counter, req[0],
                           &expected_counter, out_abort)) {
-    if (*out_abort == FBSEC_SOD_ABORT_TRANSFER
-        && slot->counter >= FBSEC_AEAD_KEY_USE_LIMIT) {
+    if (*out_abort == FBSEC_ABORT_KEY_BUDGET) {
       slot->in_use = false;     /* key-use limit reached: tear-down */
     }
     return FBSEC_SOD_ABORT;
   }
 
   if (!fbsec_sod_port_access_allowed(FBSEC_SOD_OP_READ, entry->data_id)) {
-    *out_abort = FBSEC_SOD_ABORT_LOCKED;
+    *out_abort = FBSEC_ABORT_DEVICE_STATE;
     return FBSEC_SOD_ABORT;
   }
   if (!fbsec_sod_port_role_allowed(FBSEC_SOD_OP_READ,
                                    FBSEC_AEAD_KEYID_BASE(slot->key_id),
                                    entry->data_id)) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_ROLE_DENIED;
     return FBSEC_SOD_ABORT;
   }
 
   uint8_t  plaintext[FBSEC_AEAD_MAX_PROTECTED];
   uint16_t plain_len = entry->data_len;
-  uint32_t hook_rc = fbsec_sod_port_read_before(entry->data_id,
+  fbsec_abort_t hook_rc = fbsec_sod_port_read_before(entry->data_id,
                                               plaintext, &plain_len);
-  if (hook_rc != 0u) { *out_abort = hook_rc; return FBSEC_SOD_ABORT; }
+  if (hook_rc != FBSEC_ABORT_NONE) { *out_abort = hook_rc; return FBSEC_SOD_ABORT; }
   if (plain_len != entry->data_len) {
-    *out_abort = FBSEC_SOD_ABORT_GENERAL;
+    *out_abort = FBSEC_ABORT_INTERNAL;
     return FBSEC_SOD_ABORT;
   }
 
   const uint8_t *key = get_key(FBSEC_AEAD_KEYID_BASE(slot->key_id));
   if (key == NULL) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_KEY_ID;
     return FBSEC_SOD_ABORT;
   }
 
@@ -757,7 +869,7 @@ static fbsec_sod_status_t handle_read_poll(
                      NULL, NULL,            /* no challenge randoms on polls */
                      plaintext, plain_len,
                      out_cipher, out_tag)) {
-    *out_abort = FBSEC_SOD_ABORT_GENERAL;
+    *out_abort = FBSEC_ABORT_INTERNAL;
     return FBSEC_SOD_ABORT;
   }
   *out_counter = (uint8_t)(expected_counter & 0xFFu);
@@ -776,33 +888,32 @@ static fbsec_sod_status_t handle_write_poll(
   uint16_t                 client_dev,
   const uint8_t           *req,
   uint16_t                 req_len,
-  uint32_t                *out_abort)
+  fbsec_abort_t           *out_abort)
 {
   write_state_t *slot = &g_write_slot[slot_idx];
   if (!slot->in_use || !slot->cyclic) {
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_NO_SESSION;
     return FBSEC_SOD_ABORT;
   }
   if (slot->client_dev != client_dev) {
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_NO_SESSION;
     return FBSEC_SOD_ABORT;
   }
   if (!session_is_fresh(slot->armed_at)) {
     slot->in_use = false;
-    *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+    *out_abort = FBSEC_ABORT_NO_SESSION;
     return FBSEC_SOD_ABORT;
   }
   uint16_t expected_len = (uint16_t)(1u + entry->data_len + FBSEC_AEAD_TAG_SIZE);
   if (req_len != expected_len) {
-    *out_abort = FBSEC_SOD_ABORT_TYPEMISMATCH;
+    *out_abort = length_abort(req_len, expected_len);
     return FBSEC_SOD_ABORT;
   }
 
   uint32_t expected_counter = 0u;
   if (!poll_check_counter(slot->counter, req[0],
                           &expected_counter, out_abort)) {
-    if (*out_abort == FBSEC_SOD_ABORT_TRANSFER
-        && slot->counter >= FBSEC_AEAD_KEY_USE_LIMIT) {
+    if (*out_abort == FBSEC_ABORT_KEY_BUDGET) {
       slot->in_use = false;     /* key-use limit reached: tear-down */
     }
     return FBSEC_SOD_ABORT;
@@ -811,7 +922,7 @@ static fbsec_sod_status_t handle_write_poll(
   if (!fbsec_sod_port_role_allowed(FBSEC_SOD_OP_WRITE,
                                    FBSEC_AEAD_KEYID_BASE(slot->key_id),
                                    entry->data_id)) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_ROLE_DENIED;
     return FBSEC_SOD_ABORT;
   }
 
@@ -819,7 +930,7 @@ static fbsec_sod_status_t handle_write_poll(
   const uint8_t *tag        = &req[1u + entry->data_len];
   const uint8_t *key        = get_key(FBSEC_AEAD_KEYID_BASE(slot->key_id));
   if (key == NULL) {
-    *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+    *out_abort = FBSEC_ABORT_KEY_ID;
     return FBSEC_SOD_ABORT;
   }
 
@@ -837,13 +948,13 @@ static fbsec_sod_status_t handle_write_poll(
                      plaintext)) {
     /* Bad tag: do NOT advance counter, do NOT tear down. The legitimate
        client's next poll with the (still-) expected counter must succeed. */
-    *out_abort = FBSEC_SOD_ABORT_TAGFAIL;
+    *out_abort = FBSEC_ABORT_TAG_VERIFY;
     return FBSEC_SOD_ABORT;
   }
 
-  uint32_t hook_rc = fbsec_sod_port_write_after(entry->data_id,
+  fbsec_abort_t hook_rc = fbsec_sod_port_write_after(entry->data_id,
                                               plaintext, entry->data_len);
-  if (hook_rc != 0u) { *out_abort = hook_rc; return FBSEC_SOD_ABORT; }
+  if (hook_rc != FBSEC_ABORT_NONE) { *out_abort = hook_rc; return FBSEC_SOD_ABORT; }
 
   slot->counter  = expected_counter;
   slot->armed_at = fbsec_sod_port_get_time_ms();
@@ -862,10 +973,10 @@ fbsec_sod_status_t fbsec_sod_dispatch(
   uint8_t       *reply,
   uint16_t       reply_max,
   uint16_t      *reply_len,
-  uint32_t      *out_abort)
+  fbsec_abort_t *out_abort)
 {
   *reply_len = 0u;
-  *out_abort = 0u;
+  *out_abort = FBSEC_ABORT_NONE;
 
   int idx = find_index(data_id);
   if (idx < 0) {
@@ -932,7 +1043,7 @@ fbsec_sod_status_t fbsec_sod_dispatch(
       if (slot->in_use && slot->prepared_len > 0u && slot_is_fresh(slot->armed_at)) {
         if (slot->prepared_len > reply_max) {
           slot->in_use = false;
-          *out_abort = FBSEC_SOD_ABORT_GENERAL;
+          *out_abort = FBSEC_ABORT_INTERNAL;
           return FBSEC_SOD_ABORT;
         }
         memcpy(reply, slot->prepared, slot->prepared_len);
@@ -952,14 +1063,14 @@ fbsec_sod_status_t fbsec_sod_dispatch(
          empty-payload request begins a write challenge; otherwise it is a
          protocol violation. */
       if (!has_wo) {
-        *out_abort = FBSEC_SOD_ABORT_TRANSFER;
+        *out_abort = FBSEC_ABORT_NO_SESSION;
         return FBSEC_SOD_ABORT;
       }
       /* fall through to SECURE_WO empty-payload path */
     } else if (req_len == 1u && has_wo) {
       /* fall through to SECURE_WO Pass-1 with explicit keyid byte */
     } else if (!has_wo) {
-      *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+      *out_abort = FBSEC_ABORT_TYPE_MISMATCH;
       return FBSEC_SOD_ABORT;
     }
   }
@@ -998,7 +1109,7 @@ fbsec_sod_status_t fbsec_sod_dispatch(
   (void)has_ro;
   (void)has_wo;
 
-  *out_abort = FBSEC_SOD_ABORT_UNSUPPORTED;
+  *out_abort = FBSEC_ABORT_NOT_BUILT;
   return FBSEC_SOD_ABORT;
 }
 

@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, per-request trace formatter.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 20-JUL-2026
  *
  * Two-line action-block log: one row for the incoming request
  * (RX, blue), one for the outgoing response (TX, magenta), with
@@ -29,6 +29,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+
+#include "fbsec_abort.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,7 +58,8 @@ void fbsec_server_trace_print_legend(void);
  * @param verb         "SRD1" / "SRD2" / "SWR1" / "SWR2" / "SRD?"
  *                     / "SWR?"; the dispatch glue figures these out
  *                     from the entry shape.
- * @param status       0 = success / DEFER ACK; non-zero = abort code.
+ * @param status       FBSEC_ABORT_NONE = success / DEFER ACK;
+ *                     otherwise the CiA 1301 USDO abort code.
  * @param req_payload  request payload bytes (NULL when len == 0).
  * @param req_len      request payload length.
  * @param out_data     reply payload bytes (NULL on abort or empty ACK).
@@ -66,7 +69,7 @@ void fbsec_server_trace_request(uint16_t       src_dev,
                                 uint16_t       dst_dev,
                                 uint32_t       data_id,
                                 const char    *verb,
-                                uint32_t       status,
+                                fbsec_abort_t  status,
                                 const uint8_t *req_payload,
                                 uint16_t       req_len,
                                 const uint8_t *out_data,

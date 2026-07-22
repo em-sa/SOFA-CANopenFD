@@ -5,7 +5,7 @@
  * @brief   SOFA client_common, secure-frame trace formatter.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 20-JUL-2026
  *
  * Per-frame action-block log mirroring the server's per-request log:
  * row-leading direction tint (blue request, magenta response) covers
@@ -33,6 +33,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+
+#include "fbsec_abort.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,9 +81,9 @@ void fbsec_client_trace_inc_round(void);
  * @param payload   wire payload bytes (pre-envelope on TX, post-envelope on RX).
  *                  May be NULL when @p plen == 0.
  * @param plen      payload length in bytes.
- * @param status    on RX rows, the variant's envelope status (0 = OK,
- *                  non-zero = abort code; pretty-printed inline).
- *                  Ignored on TX rows.
+ * @param status    on RX rows, the CiA 1301 USDO abort code
+ *                  (FBSEC_ABORT_NONE = OK; otherwise pretty-printed
+ *                  inline as "abort 0xNN (name)"). Ignored on TX rows.
  */
 void fbsec_client_trace_secure_frame(bool          is_tx,
                                      uint16_t      src,
@@ -89,7 +91,7 @@ void fbsec_client_trace_secure_frame(bool          is_tx,
                                      uint32_t      data_id,
                                      const uint8_t *payload,
                                      uint32_t      plen,
-                                     uint32_t      status);
+                                     fbsec_abort_t status);
 
 /**
  * @brief Close a deferred secure-RX trace line by appending the
@@ -102,6 +104,18 @@ void fbsec_client_trace_close_with_plain(uint32_t data_id,
 
 /** Close a deferred secure-RX trace line with just a newline. */
 void fbsec_client_trace_close_no_plain(void);
+
+/**
+ * @brief Force RX rows to defer their newline until an explicit close, so a
+ *        caller can append text inline. Used by the security-parameter scan.
+ */
+void fbsec_client_trace_set_force_defer(bool on);
+
+/**
+ * @brief Close a deferred RX line by appending " ; <note>" + newline.
+ *        No-op if no line is currently open.
+ */
+void fbsec_client_trace_close_with_note(const char *note);
 
 /* ---- Hex segment printer (public for verb runners) ------------------ */
 
@@ -119,6 +133,18 @@ const char *fbsec_client_trace_col_rand(void);
 const char *fbsec_client_trace_col_tag(void);
 const char *fbsec_client_trace_col_plain(void);
 const char *fbsec_client_trace_col_abort(void);
+
+/* ---- Abort-code rendering ------------------------------------------- */
+
+/**
+ * @brief Short human-readable name for a CiA 1301 USDO abort code.
+ *
+ * Covers the Table 31 codes SOFA emits plus the SOFA C0h..CFh block.
+ *
+ * @param code  the `ac` byte from an abort frame.
+ * @return A static string; "reserved" for codes SOFA never emits.
+ */
+const char *fbsec_client_abort_name(fbsec_abort_t code);
 
 #ifdef __cplusplus
 }

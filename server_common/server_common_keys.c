@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, demo keys + key-file loader, impl.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 22-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -52,14 +52,22 @@ const uint8_t FBSEC_DEMO_KEY_OPERATOR[32] = {
 /* ---- Demo key install ------------------------------------------------- */
 
 void fbsec_server_install_demo_keys_if_unset(void) {
+  /* Demo key ids are set distinct from the slot/role number (0x1001..)
+     so C011h visibly reports an id independent of the role. */
   if (!fbsec_sod_has_key(FBSEC_DEMO_KEYID_PROVISIONING)) {
-    (void)fbsec_sod_set_key(FBSEC_DEMO_KEYID_PROVISIONING, FBSEC_DEMO_KEY_PROVISIONING);
+    (void)fbsec_sod_set_key_ex(FBSEC_DEMO_KEYID_PROVISIONING,
+                               FBSEC_DEMO_KEY_PROVISIONING,
+                               FBSEC_DEMO_KEYID_VALUE_PROVISIONING);
   }
   if (!fbsec_sod_has_key(FBSEC_DEMO_KEYID_INTEGRATOR)) {
-    (void)fbsec_sod_set_key(FBSEC_DEMO_KEYID_INTEGRATOR,   FBSEC_DEMO_KEY_INTEGRATOR);
+    (void)fbsec_sod_set_key_ex(FBSEC_DEMO_KEYID_INTEGRATOR,
+                               FBSEC_DEMO_KEY_INTEGRATOR,
+                               FBSEC_DEMO_KEYID_VALUE_INTEGRATOR);
   }
   if (!fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR)) {
-    (void)fbsec_sod_set_key(FBSEC_DEMO_KEYID_OPERATOR,     FBSEC_DEMO_KEY_OPERATOR);
+    (void)fbsec_sod_set_key_ex(FBSEC_DEMO_KEYID_OPERATOR,
+                               FBSEC_DEMO_KEY_OPERATOR,
+                               FBSEC_DEMO_KEYID_VALUE_OPERATOR);
   }
 }
 
@@ -116,39 +124,66 @@ int fbsec_server_load_key_file(const char *path) {
   char line[256];
   unsigned loaded = 0u;
   while (fgets(line, sizeof line, f) != NULL) {
-    char *p = line;
-    while (*p == ' ' || *p == '\t') {
-      ++p;
-    }
-    if (*p == '#' || *p == '\0' || *p == '\n' || *p == '\r') {
-      continue;
+    char         *hash;
+    char         *t_kid;
+    char         *t_label;
+    char         *t_key;
+    char         *t_id;
+    char         *endp;
+    unsigned long kid;
+    unsigned long idv;
+    uint8_t       key[FBSEC_AEAD_KEY_SIZE];
+    size_t        klen;
+
+    /* Strip a trailing comment before tokenizing. */
+    hash = strchr(line, '#');
+    if (hash != NULL) {
+      *hash = '\0';
     }
 
-    char *endp = NULL;
-    unsigned long kid = strtoul(p, &endp, 0);
-    if (endp == p || kid < 1u || kid > 255u) {
-      fprintf(stderr, "key-file: bad keyid in line '%s'\n", line);
+    /* Row: <keyid> <label> <hex-key> [<u32-id>]. The id column is
+       optional; absent, the non-secret key id defaults to the keyid. */
+    t_kid = strtok(line, " \t\r\n");
+    if (t_kid == NULL) {
+      continue;                             /* blank / comment-only line */
+    }
+    endp = NULL;
+    kid = strtoul(t_kid, &endp, 0);
+    if (endp == t_kid || *endp != '\0' || kid < 1u || kid > 255u) {
+      fprintf(stderr, "key-file: bad keyid '%s'\n", t_kid);
       (void)fclose(f);
       return -1;
     }
-    p = endp;
-    while (*p == ' ' || *p == '\t') {
-      ++p;
+
+    t_label = strtok(NULL, " \t\r\n");
+    t_key   = strtok(NULL, " \t\r\n");
+    if (t_label == NULL || t_key == NULL) {
+      fprintf(stderr, "key-file: keyid %lu missing label or key\n", kid);
+      (void)fclose(f);
+      return -1;
     }
-    /* skip label token */
-    while (*p != '\0' && *p != ' ' && *p != '\t') {
-      ++p;
-    }
-    /* the rest is hex */
-    uint8_t key[FBSEC_AEAD_KEY_SIZE];
-    size_t klen = fbsec_server_parse_hex_strict(p, key, sizeof key);
+
+    klen = fbsec_server_parse_hex_strict(t_key, key, sizeof key);
     if (klen != FBSEC_AEAD_KEY_SIZE) {
       fprintf(stderr, "key-file: keyid %lu not %u hex bytes\n",
               kid, (unsigned)FBSEC_AEAD_KEY_SIZE);
       (void)fclose(f);
       return -1;
     }
-    if (!fbsec_sod_set_key((uint8_t)kid, key)) {
+
+    idv = kid;                              /* default id = keyid */
+    t_id = strtok(NULL, " \t\r\n");
+    if (t_id != NULL) {
+      endp = NULL;
+      idv = strtoul(t_id, &endp, 0);
+      if (endp == t_id || *endp != '\0') {
+        fprintf(stderr, "key-file: keyid %lu bad id '%s'\n", kid, t_id);
+        (void)fclose(f);
+        return -1;
+      }
+    }
+
+    if (!fbsec_sod_set_key_ex((uint8_t)kid, key, (uint32_t)idv)) {
       fprintf(stderr, "key-file: keyid %lu rejected\n", kid);
       (void)fclose(f);
       return -1;

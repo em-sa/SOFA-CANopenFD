@@ -5,12 +5,13 @@
  * @brief   SOFA server_common, secure OD setup (demo entries).
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 22-JUL-2026
  *
- * One-shot initialization of the secure-OD registry with the four
- * demo entries (`FBSEC_SERVER_ENTRY_*` from
- * `server_common_hooks.h`), plus `--key-file` loading and demo-key
- * fallback. Variants call this once per process startup.
+ * One-shot initialization of the secure-OD registry with the demo
+ * entries (`FBSEC_SERVER_ENTRY_*` from `server_common_hooks.h`), the
+ * constant-OD table (`--od-file`, including the 1018h identity that
+ * backs C018h), plus `--key-file` loading and demo-key fallback.
+ * Variants call this once per process startup.
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -27,24 +28,29 @@ extern "C" {
 #endif
 
 /**
- * @brief One-time setup: reset secure-OD registry, register the four
- *        demo entries, prefill 0xC0180000 with the runtime identity
- *        string, load --key-file (if any), install demo keys for any
- *        unset slots.
+ * @brief One-time setup: reset secure-OD registry, load the constant-OD
+ *        file, register the demo entries (C018h only when its 1018h
+ *        identity is present), load --key-file (if any), install demo
+ *        keys for any unset slots.
  *
  * Side effects:
  *   - calls @ref fbsec_sod_init,
  *   - calls @ref fbsec_server_hooks_set_my_dev,
- *   - calls @ref fbsec_server_hooks_prefill_secure_ro,
- *   - registers four entries via @ref fbsec_sod_register_entry,
+ *   - loads @p od_file_path into the constant-OD table when non-NULL,
+ *   - calls @ref fbsec_server_hooks_load_identity,
+ *   - registers the demo entries via @ref fbsec_sod_register_entry,
  *   - calls @ref fbsec_server_load_key_file when @p key_file_path is non-NULL,
  *   - calls @ref fbsec_server_install_demo_keys_if_unset.
  *
+ * @param my_dev         responder device id.
+ * @param key_file_path  --key-file path, or NULL for demo keys.
+ * @param od_file_path   --od-file path, or NULL (then 1018h / C018h absent).
  * @retval  0  success.
- * @retval -1  entry registration or key-file load failed (already
- *             logged to stderr). Prefill cannot fail.
+ * @retval -1  const-OD load, entry registration or key-file load failed
+ *             (already logged to stderr).
  */
-int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path);
+int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path,
+                         const char *od_file_path);
 
 #ifdef __cplusplus
 }

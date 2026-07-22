@@ -12,7 +12,7 @@
 ## License: Apache License 2.0.
 ## ---------------------------------------------------------------------------
 
-add_library(fbsec_server_common STATIC
+set(FBSEC_SERVER_COMMON_SRC
   server_common_cfg.h
   server_common_platform.c
   server_common_platform.h
@@ -22,6 +22,10 @@ add_library(fbsec_server_common STATIC
   server_common_hooks.h
   server_common_od.c
   server_common_od.h
+  server_common_const_od.c
+  server_common_const_od.h
+  server_common_security.c
+  server_common_security.h
   server_common_trace.c
   server_common_trace.h
   server_common_dispatch.c
@@ -29,6 +33,18 @@ add_library(fbsec_server_common STATIC
   server_common_cli.c
   server_common_cli.h
 )
+
+# Optional asymmetric identity store + handover (device side).
+if(FBSEC_FEATURE_ASYM)
+  list(APPEND FBSEC_SERVER_COMMON_SRC
+    server_common_asym.c
+    server_common_asym.h
+    server_common_handover.c
+    server_common_handover.h
+  )
+endif()
+
+add_library(fbsec_server_common STATIC ${FBSEC_SERVER_COMMON_SRC})
 
 target_include_directories(fbsec_server_common PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"

@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, demo key constants + key-file loader.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 22-JUL-2026
  *
  * Three demo per-session keys ("Provisioning Session Key" /
  * "Integrator Session Key" / "Operator Session Key" per WP-104 §3.4
@@ -16,11 +16,13 @@
  * when no `--key-file` populates the slots.
  *
  * Plus a text-format key-file loader that registers parsed keys via
- * `fbsec_sod_set_key`. File layout: one row per keyid:
+ * `fbsec_sod_set_key_ex`. File layout: one row per keyid:
  *
- *     <keyid> <label> <hex_FBSEC_AEAD_KEY_SIZE_bytes>
+ *     <keyid> <label> <hex_FBSEC_AEAD_KEY_SIZE_bytes> [<u32_id>]
  *
- * Lines starting with '#' and blank lines are ignored.
+ * The 4th column is the optional non-secret key id / version reported by
+ * C011h; when absent it defaults to the keyid. Comments start with '#'
+ * and blank lines are ignored.
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -40,6 +42,12 @@ extern "C" {
 #define FBSEC_DEMO_KEYID_PROVISIONING 1u
 #define FBSEC_DEMO_KEYID_INTEGRATOR   2u
 #define FBSEC_DEMO_KEYID_OPERATOR     3u
+
+/* Demo non-secret key id / version values reported by C011h, set distinct
+   from the slot/role number so the id is visibly independent. */
+#define FBSEC_DEMO_KEYID_VALUE_PROVISIONING 0x1001u
+#define FBSEC_DEMO_KEYID_VALUE_INTEGRATOR   0x1002u
+#define FBSEC_DEMO_KEYID_VALUE_OPERATOR     0x1003u
 
 extern const uint8_t FBSEC_DEMO_KEY_PROVISIONING[32];
 extern const uint8_t FBSEC_DEMO_KEY_INTEGRATOR[32];

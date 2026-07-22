@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, dispatch glue, implementation.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.2 of 22-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -15,18 +15,153 @@
 #include "server_common_dispatch.h"
 #include "server_common_trace.h"
 #include "server_common_hooks.h"
+#include "server_common_keys.h"
+#include "server_common_const_od.h"
+#include "server_common_security.h"
 
 #include "fbsec_aead.h"
 #include "fbsec_secure_od.h"
+#include "fbsec_descriptor.h"
+
+#if FBSEC_FEATURE_ASYM
+#include "server_common_asym.h"
+#include "server_common_handover.h"
+#endif
 
 /* Worst-case secure reply: server_random[R] + cipher[N_MAX] + tag[T]
    = 12 + 32 + 8 = 52 bytes at default AEAD config. Round up to 64
    for a comfortable margin (fits the CAN FD 64-byte payload bound
-   exactly). */
+   exactly). Signed-FBsec appends a 64-byte Ed25519 trailer, so the
+   buffer grows to hold server_random + cipher + tag + signature. */
+#if FBSEC_ASYM_SIGNED_FBSEC
+#define FBSEC_SERVER_DISPATCH_REPLY_MAX 128u
+#else
 #define FBSEC_SERVER_DISPATCH_REPLY_MAX 64u
+#endif
 
-/* ABORT_NO_ENTRY (CiA-301 0x06020000): object does not exist. */
-#define FBSEC_SERVER_ABORT_NO_ENTRY 0x06020000u
+/**
+ * @brief Serve a read of the capability/status descriptor (read-only,
+ *        unauthenticated; spec section 11.6.3).
+ *
+ * @param src_dev       requester's device id.
+ * @param data_id       requested data id.
+ * @param payload       request payload bytes (NULL iff @p payload_len is 0).
+ * @param payload_len   request payload length.
+ * @param send_reply    variant reply callback.
+ * @param user          opaque pointer forwarded to @p send_reply.
+ *
+ * @return true if @p data_id targets a descriptor record and a reply was
+ *         sent; false to let the normal secure dispatch run.
+ */
+static bool try_serve_descriptor(uint16_t src_dev, uint32_t data_id,
+                                 const uint8_t *payload, uint16_t payload_len,
+                                 fbsec_send_reply_fn_t send_reply, void *user) {
+  uint16_t index = (uint16_t)(data_id >> 16);
+  uint8_t  sub   = (uint8_t)((data_id >> 8) & 0xFFu);
+  bool     is_status;
+  uint8_t  buf[4];
+  uint16_t n = 0u;
+  uint8_t  highest;
+  bool     sub_exists;
+  uint16_t dst_dev = fbsec_sod_port_get_device_id();
+  const char *verb;
+
+  if ((index != FBSEC_DESC_CAP_INDEX) && (index != FBSEC_DESC_STAT_INDEX)) {
+    return false;
+  }
+  is_status = (index == FBSEC_DESC_STAT_INDEX);
+  verb = is_status ? "STAT" : "CAP";
+
+  /* Descriptors are read-only and unauthenticated. Addressing is checked
+     before access: an unknown sub-index (or a non-zero reserved low
+     data_id byte) is 34h, and only then does a body-bearing request -
+     a write, or a secure-read challenge these entries do not take - hit
+     the read-only refusal 32h. C000h (capabilities) is build-computed;
+     C001h (status) reflects live commissioning and key-slot state. */
+  if (is_status) {
+    fbsec_status_t stat;
+    uint8_t keys = 0u;
+    if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_PROVISIONING)) {
+      keys |= FBSEC_STAT_KEY_PROVISIONING;
+    }
+    if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_INTEGRATOR)) {
+      keys |= FBSEC_STAT_KEY_INTEGRATOR;
+    }
+    if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR)) {
+      keys |= FBSEC_STAT_KEY_OPERATOR;
+    }
+    fbsec_descriptor_build_status(FBSEC_STAT_COMMISSIONED, keys, &stat);
+    highest = stat.highest_sub;
+    sub_exists = ((data_id & 0xFFu) == 0u) && (sub <= highest);
+    if (sub_exists && (payload_len == 0u)) {
+      n = fbsec_status_serialize_sub(&stat, sub, buf, (uint16_t)sizeof(buf));
+    }
+  } else {
+    fbsec_caps_t caps;
+    fbsec_descriptor_build_caps(&caps);
+    highest = caps.highest_sub;
+    sub_exists = ((data_id & 0xFFu) == 0u) && (sub <= highest);
+    if (sub_exists && (payload_len == 0u)) {
+      n = fbsec_caps_serialize_sub(&caps, sub, buf, (uint16_t)sizeof(buf));
+    }
+  }
+
+  /* MISRA-Dir-4.7 deviation: send_reply's TX status is discarded; the
+     variant logs any transmit failure itself (see fbsec_send_reply_fn_t). */
+  if (n != 0u) {
+    (void)send_reply(user, src_dev, data_id, FBSEC_ABORT_NONE, buf, n);
+    fbsec_server_trace_request(src_dev, dst_dev, data_id, verb,
+                               FBSEC_ABORT_NONE,
+                               payload, payload_len, buf, (size_t)n);
+  } else {
+    fbsec_abort_t abort_code = sub_exists ? FBSEC_ABORT_READ_ONLY
+                                          : FBSEC_ABORT_NO_SUBINDEX;
+    (void)send_reply(user, src_dev, data_id, abort_code, NULL, 0u);
+    fbsec_server_trace_request(src_dev, dst_dev, data_id, verb, abort_code,
+                               payload, payload_len, NULL, 0u);
+  }
+  return true;
+}
+
+/**
+ * @brief Serve a read of a constant, unsecured OD entry (object 1018h and
+ *        other manufacturer / application constants loaded from --od-file).
+ *
+ * @return true if @p data_id matches a loaded const entry and a reply was
+ *         sent; false to let later dispatch tiers run.
+ */
+static bool try_serve_const_od(uint16_t src_dev, uint32_t data_id,
+                               const uint8_t *payload, uint16_t payload_len,
+                               fbsec_send_reply_fn_t send_reply, void *user) {
+  uint16_t index = (uint16_t)(data_id >> 16);
+  uint8_t  sub   = (uint8_t)((data_id >> 8) & 0xFFu);
+  uint16_t len   = 0u;
+  const uint8_t *val;
+  uint16_t dst_dev = fbsec_sod_port_get_device_id();
+
+  if ((data_id & 0xFFu) != 0u) {
+    return false;
+  }
+  val = fbsec_const_od_get(index, sub, &len);
+  if (val == NULL) {
+    return false;                          /* not a const entry */
+  }
+
+  /* MISRA-Dir-4.7 deviation: send_reply's TX status is discarded; the
+     variant logs any transmit failure itself. */
+  if (payload_len != 0u) {                 /* const entries are read-only */
+    (void)send_reply(user, src_dev, data_id, FBSEC_ABORT_READ_ONLY, NULL, 0u);
+    fbsec_server_trace_request(src_dev, dst_dev, data_id, "CRD",
+                               FBSEC_ABORT_READ_ONLY,
+                               payload, payload_len, NULL, 0u);
+  } else {
+    (void)send_reply(user, src_dev, data_id, FBSEC_ABORT_NONE, val, len);
+    fbsec_server_trace_request(src_dev, dst_dev, data_id, "CRD",
+                               FBSEC_ABORT_NONE,
+                               payload, payload_len, val, (size_t)len);
+  }
+  return true;
+}
 
 /**
  * @brief Detect the verb token from the entry's access flags + the
@@ -71,8 +206,38 @@ void fbsec_server_dispatch_request(uint16_t            src_dev,
                                    fbsec_send_reply_fn_t send_reply,
                                    void               *user) {
   uint8_t  reply_buf[FBSEC_SERVER_DISPATCH_REPLY_MAX];
-  uint16_t reply_len  = 0u;
-  uint32_t abort_code = 0u;
+  uint16_t      reply_len  = 0u;
+  fbsec_abort_t abort_code = FBSEC_ABORT_NONE;
+
+  /* C000h / C001h descriptors are read-only and unauthenticated; serve
+     them before the secure dispatch (CiA 720 base parameters). */
+  if (try_serve_descriptor(src_dev, data_id, payload, payload_len,
+                           send_reply, user)) {
+    return;
+  }
+
+  /* Constant, unsecured OD entries (object 1018h and other --od-file
+     constants). */
+  if (try_serve_const_od(src_dev, data_id, payload, payload_len,
+                         send_reply, user)) {
+    return;
+  }
+
+  /* CiA 720 AEAD-block security objects handled outside the registry
+     (C010h session salt, C011h key ids, C01Fh key set). */
+  if (fbsec_server_security_try(src_dev, data_id, payload, payload_len,
+                                send_reply, user)) {
+    return;
+  }
+
+#if FBSEC_FEATURE_ASYM
+  /* Handover objects (identity read, voucher, epoch, provisioning install,
+     LDevID export) are served by the handover module (spec 11.6.6). */
+  if (fbsec_server_handover_try(src_dev, data_id, payload, payload_len,
+                                send_reply, user)) {
+    return;
+  }
+#endif
 
   fbsec_sod_status_t srv = fbsec_sod_dispatch(src_dev, data_id,
                                               payload, payload_len,
@@ -89,15 +254,16 @@ void fbsec_server_dispatch_request(uint16_t            src_dev,
        contract the variant logs any transmit failure itself; dispatch is
        fire-and-forget at this layer. */
     if (srv == FBSEC_SOD_OK) {
-      (void)send_reply(user, src_dev, data_id, 0u, reply_buf, reply_len);
+      (void)send_reply(user, src_dev, data_id, FBSEC_ABORT_NONE,
+                       reply_buf, reply_len);
       fbsec_server_trace_request(src_dev, dst_dev, data_id, verb,
-                                 0u,
+                                 FBSEC_ABORT_NONE,
                                  payload, payload_len,
                                  reply_buf, (size_t)reply_len);
     } else if (srv == FBSEC_SOD_DEFER) {
-      (void)send_reply(user, src_dev, data_id, 0u, NULL, 0u);
+      (void)send_reply(user, src_dev, data_id, FBSEC_ABORT_NONE, NULL, 0u);
       fbsec_server_trace_request(src_dev, dst_dev, data_id, verb,
-                                 0u,
+                                 FBSEC_ABORT_NONE,
                                  payload, payload_len,
                                  NULL, 0u);
     } else {
@@ -114,9 +280,9 @@ void fbsec_server_dispatch_request(uint16_t            src_dev,
   const char *verb    = (payload_len == 0u) ? "SRD?" : "SWR?";
   uint16_t    dst_dev = fbsec_sod_port_get_device_id();
   /* MISRA-Dir-4.7 deviation: discard send_reply status; variant logs TX failure. */
-  (void)send_reply(user, src_dev, data_id, FBSEC_SERVER_ABORT_NO_ENTRY, NULL, 0u);
+  (void)send_reply(user, src_dev, data_id, FBSEC_ABORT_NO_OBJECT, NULL, 0u);
   fbsec_server_trace_request(src_dev, dst_dev, data_id, verb,
-                             FBSEC_SERVER_ABORT_NO_ENTRY,
+                             FBSEC_ABORT_NO_OBJECT,
                              payload, payload_len,
                              NULL, 0u);
 }

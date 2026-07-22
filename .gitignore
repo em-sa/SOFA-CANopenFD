@@ -1,5 +1,8 @@
-## CMake / MSVC build trees
+## CMake / MSVC build trees. "build-*" catches the per-configuration trees
+## (build-asym, build-auth); without it their .vcxproj and CTestTestfile.cmake
+## are offered to git, and those name the self-test targets.
 build/
+build-*/
 out/
 
 ## Visual Studio / VS Code local state
@@ -31,5 +34,19 @@ Thumbs.db
 ## Internal development history (not for publication)
 HISTORY.md
 
-## Word sources are not published — only the exported PDF ships in doc/
+## From doc/, only README.txt and the exported manual SOFA-UM-105.pdf are
+## published (nothing here ignores doc/*.pdf, so the manual stays tracked).
+## Everything else under doc/ is a working file, not for distribution.
 doc/*.docx
+doc/_archive/
+doc/um105/
+doc/decisions/
+
+## Python bytecode cache
+__pycache__/
+*.pyc
+
+## The self-test suite is maintained separately and is not part of this
+## distribution. CMakeLists.txt guards on tests/ existing, so a checkout
+## without it configures and builds normally.
+tests/

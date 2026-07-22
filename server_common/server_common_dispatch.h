@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, dispatch glue (variant-agnostic).
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 20-JUL-2026
  *
  * Wraps `fbsec_sod_dispatch` with verb detection and trace emission.
  * The variant calls @ref fbsec_server_dispatch_request once per
@@ -16,8 +16,8 @@
  *
  * Unknown data_id (not in the secure registry): the demonstrator no
  * longer accepts plain rd / wr; everything must go through the
- * secure tunnel. An unknown data_id triggers a 0x06020000 (ABORT_NO_ENTRY)
- * abort.
+ * secure tunnel. An unknown data_id triggers a CiA 1301 33h
+ * (FBSEC_ABORT_NO_OBJECT) abort.
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0

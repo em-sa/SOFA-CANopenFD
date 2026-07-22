@@ -5,7 +5,7 @@
  * @brief   SOFA client_common, secure verb runners, implementation.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 20-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -52,7 +52,7 @@ const char *fbsec_client_secp_strerror(fbsec_secure_status_t rc) {
 static void emit_summary(bool success,
                          uint32_t data_id,
                          const uint8_t *plain, size_t plen,
-                         uint32_t abort_code, const char *fail_text) {
+                         fbsec_abort_t abort_code, const char *fail_text) {
   if (fbsec_client_trace_get_quiet()) {
     return;
   }
@@ -70,8 +70,9 @@ static void emit_summary(bool success,
            fbsec_client_trace_col_abort(), fail_text,
            fbsec_client_trace_col_end());
   } else {
-    printf("%sFAIL  abort 0x%08X%s\n",
+    printf("%sFAIL  abort 0x%02X (%s)%s\n",
            fbsec_client_trace_col_abort(), (unsigned)abort_code,
+           fbsec_client_abort_name(abort_code),
            fbsec_client_trace_col_end());
   }
 }
@@ -85,7 +86,7 @@ int fbsec_client_run_secure_read(const fbsec_secure_transport_t *transport,
                                  uint32_t timeout_ms,
                                  uint8_t *out_buf, uint32_t out_buf_size,
                                  uint32_t *out_len) {
-  uint32_t abort_code = 0u;
+  fbsec_abort_t abort_code = 0u;
   uint32_t got = 0u;
   fbsec_client_keys_clear_observed_salt();
   fbsec_client_trace_set_verb("srd");
@@ -126,7 +127,7 @@ int fbsec_client_run_secure_write(const fbsec_secure_transport_t *transport,
                                   uint32_t data_id,
                                   const uint8_t *payload, uint16_t plen,
                                   uint32_t timeout_ms) {
-  uint32_t abort_code = 0u;
+  fbsec_abort_t abort_code = 0u;
   fbsec_client_keys_clear_observed_salt();
   fbsec_client_trace_set_verb("swr");
   fbsec_client_trace_reset_round();
@@ -168,7 +169,7 @@ int fbsec_client_run_secure_read_poll(const fbsec_secure_transport_t *transport,
   fbsec_secure_session_t sess;
   memset(&sess, 0, sizeof sess);
 
-  uint32_t abort_code = 0u;
+  fbsec_abort_t abort_code = 0u;
   fbsec_client_keys_clear_observed_salt();
   /* Iteration 1 is a cyclic-capable single SRD: full Pass-1 + Pass-2,
      returns the data AND a session_id we use for follow-up polls.
@@ -247,7 +248,7 @@ int fbsec_client_run_secure_write_poll(const fbsec_secure_transport_t *transport
   fbsec_secure_session_t sess;
   memset(&sess, 0, sizeof sess);
 
-  uint32_t abort_code = 0u;
+  fbsec_abort_t abort_code = 0u;
   fbsec_client_keys_clear_observed_salt();
   /* Iteration 1 is a cyclic-capable single SWR: full Pass-1 + Pass-2,
      commits the data AND establishes a session for follow-up polls. */

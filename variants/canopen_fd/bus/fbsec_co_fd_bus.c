@@ -365,7 +365,7 @@ static int cb_on_peer_readable(SOCKET sock, void *peer_state, void *vctx) {
       return -1;
     }
     /* Direction-specific tint: REQUEST is "rq"; RESPONSE-prefix splits
-       into "ab" (cmd 0x80) versus "rp" (other cmd values). */
+       into "ab" (cmd 0x7F) versus "rp" (other cmd values). */
     const char *ac;
     if (kind == FBSEC_CO_FD_USDO_KIND_REQUEST) {
       ac = AC_USDO_REQ;

@@ -5,7 +5,7 @@
  * @brief   SOFA server_common, shared CLI helpers, implementation.
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V1.0 of 07-MAY-2026
+ * @version V1.1 of 22-JUL-2026
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -97,6 +97,11 @@ fbsec_server_cli_result_t fbsec_server_cli_try_common_flag(
   }
   if (strcmp(a, "--key-file") == 0 && (i + 1) < argc) {
     cfg->key_file_path = argv[i + 1];
+    *iref = i + 2;
+    return FBSEC_SERVER_CLI_HANDLED;
+  }
+  if (strcmp(a, "--od-file") == 0 && (i + 1) < argc) {
+    cfg->od_file_path = argv[i + 1];
     *iref = i + 2;
     return FBSEC_SERVER_CLI_HANDLED;
   }
