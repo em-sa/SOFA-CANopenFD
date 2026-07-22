@@ -68,6 +68,23 @@ const uint8_t *fbsec_const_od_get(uint16_t index, uint8_t sub,
                                   uint16_t *len_out);
 
 /**
+ * @brief Number of constant-OD entries currently loaded.
+ */
+uint8_t fbsec_const_od_count(void);
+
+/**
+ * @brief Fetch the entry at table position @p pos, for enumeration.
+ *
+ * @param pos        0-based position, 0 .. fbsec_const_od_count()-1.
+ * @param index_out  receives the object index (may be NULL).
+ * @param sub_out    receives the sub-index (may be NULL).
+ * @param len_out    receives the value length (may be NULL).
+ * @return pointer to the value bytes, or NULL if @p pos is out of range.
+ */
+const uint8_t *fbsec_const_od_at(uint8_t pos, uint16_t *index_out,
+                                 uint8_t *sub_out, uint16_t *len_out);
+
+/**
  * @brief Assemble the 16-byte 1018h identity quad (subs 01h..04h).
  *
  * @param out16  receives vendor id, product code, revision and serial

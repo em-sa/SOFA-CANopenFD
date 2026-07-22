@@ -38,6 +38,8 @@ if(FBSEC_FEATURE_ASYM)
     client_common_asym.h
     client_common_commission.c
     client_common_commission.h
+    client_common_rpk.c
+    client_common_rpk.h
   )
 endif()
 

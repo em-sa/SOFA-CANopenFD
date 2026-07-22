@@ -28,6 +28,8 @@
 #ifndef SERVER_COMMON_HOOKS_H
 #define SERVER_COMMON_HOOKS_H
 
+#include "fbsec_config.h"
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -43,6 +45,14 @@ extern "C" {
 #define FBSEC_SERVER_ENTRY_SWR_DATA_ID   0x20160000u   /**< SECURE_WO 16-byte demo array */
 #define FBSEC_SERVER_ENTRY_VALUE_LEN     4u
 #define FBSEC_SERVER_ENTRY_SECURE_LEN    16u
+
+#if FBSEC_FEATURE_ASYM
+/* RPK-only demo twins, reached exclusively through the C042h signed generic
+ * access (Ed25519 replaces the AEAD tag). Distinct entries from the AEAD
+ * 2020h/2016h so no single entry carries two mechanisms. */
+#define FBSEC_SERVER_ENTRY_RPK_RD_DATA_ID 0x20210000u  /**< RPK read twin  4 B (auto-bumps) */
+#define FBSEC_SERVER_ENTRY_RPK_WR_DATA_ID 0x20170000u  /**< RPK write twin 16 B (shadow)    */
+#endif
 
 /* ---- Setup / accessors ----------------------------------------------- */
 
@@ -74,6 +84,11 @@ const uint8_t *fbsec_server_hooks_secure_ro(void);
 
 /** Read-only view of the 16-byte SECURE_WO buffer (last write). */
 const uint8_t *fbsec_server_hooks_secure_wo(void);
+
+#if FBSEC_FEATURE_ASYM
+/** Read-only view of the 16-byte RPK write-twin buffer (last signed write). */
+const uint8_t *fbsec_server_hooks_rpk_wo(void);
+#endif
 
 #ifdef __cplusplus
 }

@@ -21,9 +21,10 @@
  * status array (subs 00h..02h). They therefore have separate build /
  * serialize / deserialize entry points.
  *
- * This module is ALWAYS compiled. Pass 1 is AEAD-only: C000h
- * never advertises RPK or X509, even in an FBSEC_FEATURE_ASYM build, since
- * the dormant handover objects still live at their old 5FAx indices.
+ * This module is ALWAYS compiled. An AEAD-only build (FBSEC_FEATURE_ASYM
+ * == 0) advertises the AEAD mechanism alone; an FBSEC_FEATURE_ASYM build
+ * additionally advertises RPK (Ed25519 identity, signed secure objects at
+ * C020h/C021h/C022h/C028h/C02Fh/C042h/C049h). X509 is never advertised yet.
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -86,7 +87,6 @@ extern "C" {
 #define FBSEC_DESC_PROTO_TLS_PSK       0x0002u
 #define FBSEC_DESC_PROTO_CTLS          0x0004u
 #define FBSEC_DESC_PROTO_TLS13         0x0008u
-#define FBSEC_DESC_PROTO_SIGNED_FBSEC  0x0010u
 
 /* ---- C000h sub 03h low byte: AEAD primitive bitmap ------------------- */
 #define FBSEC_DESC_AEAD_AES128_GCM     0x01u
@@ -101,7 +101,6 @@ extern "C" {
 /* ---- C000h sub 05h: identity / certificate flags --------------------- */
 #define FBSEC_DESC_ID_IDEVID           0x01u
 #define FBSEC_DESC_ID_LDEVID           0x02u
-#define FBSEC_DESC_ID_SIGNED_FBSEC     0x04u
 #define FBSEC_DESC_ID_X509             0x08u
 
 /* ---- C000h sub 06h: handover-model bitmap (WP-104 claim gates) ------- */
@@ -144,9 +143,18 @@ typedef struct
 /* ---- C000h capabilities: build / serialize / deserialize ------------- */
 
 /**
- * @brief Build the C000h capability record for this build (pass 1: AEAD).
+ * @brief Build the C000h capability record for this build.
+ *
+ * In an FBSEC_FEATURE_ASYM build this advertises AEAD | RPK; otherwise
+ * AEAD only. Subindex 05h (identity flags) reports live state, so the
+ * caller passes the current bitmap (b0 IDevID present, b1 LDevID present);
+ * it is ignored in an AEAD-only build.
+ *
+ * @param live_id_flags  FBSEC_DESC_ID_* bitmap of the identity artifacts
+ *                       currently loaded (0 in an AEAD-only build).
+ * @param out            record to fill.
  */
-void fbsec_descriptor_build_caps(fbsec_caps_t *out);
+void fbsec_descriptor_build_caps(uint8_t live_id_flags, fbsec_caps_t *out);
 
 /**
  * @brief Serialize one C000h sub-index onto the wire (U8 or U32 LE).
@@ -189,9 +197,6 @@ bool fbsec_status_deserialize_sub(fbsec_status_t *s, uint8_t sub,
                                   const uint8_t *in, uint16_t len);
 
 /* ---- Client-side predicates (fail-closed checks) --------------------- */
-
-/** @return true if the peer advertises signed-FBsec mutual auth. */
-bool fbsec_caps_supports_signed_fbsec(const fbsec_caps_t *c);
 
 /** @return true if the peer advertises the manufacturer-voucher handover. */
 bool fbsec_caps_supports_voucher_handover(const fbsec_caps_t *c);

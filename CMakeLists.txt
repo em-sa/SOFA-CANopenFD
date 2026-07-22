@@ -61,13 +61,14 @@ set(FBSEC_FEATURE_WRITE  1 CACHE STRING "Include write path (0/1)")
 set(FBSEC_FEATURE_CYCLIC 1 CACHE STRING "Include cyclic mode (0/1)")
 
 # Optional Ed25519 asymmetric identity layer (capability/status
-# descriptors, IDevID/LDevID, signed-FBsec, handover). Default OFF: the
-# whole layer compiles out and the wire behaviour is byte-identical to a
-# symmetric-only build. FBSEC_ASYM_ED25519 / FBSEC_ASYM_SIGNED_FBSEC are
-# derived from this master in fbsec_config.h, so the CMake surface stays
-# two knobs. See doc/fieldbus_sim_secure_tunnel_spec.txt sections 11.5-11.6.
-set(FBSEC_FEATURE_ASYM        0 CACHE STRING "Optional Ed25519 asymmetric identity layer (0/1)")
-set(FBSEC_HANDOVER_AUTHORIZED 0 CACHE STRING "Authorized handover: ownership voucher + owner epoch (0/1); requires FBSEC_FEATURE_ASYM")
+# descriptors, IDevID/LDevID, RPK secure objects, handover). Default ON: a
+# stock build ships the RPK mechanism and advertises it in C000h. Set to 0
+# for a minimal AEAD-only device; the whole layer then compiles out and the
+# wire behaviour is byte-identical to a symmetric-only build. FBSEC_ASYM_ED25519
+# is derived from this master in fbsec_config.h, so the CMake surface stays two
+# knobs. The authorized handover default follows this master.
+set(FBSEC_FEATURE_ASYM        1 CACHE STRING "Optional Ed25519 asymmetric identity layer (0/1)")
+set(FBSEC_HANDOVER_AUTHORIZED ${FBSEC_FEATURE_ASYM} CACHE STRING "Authorized handover: ownership voucher + owner epoch (0/1); requires FBSEC_FEATURE_ASYM")
 
 if(FBSEC_HANDOVER_AUTHORIZED AND NOT FBSEC_FEATURE_ASYM)
   message(FATAL_ERROR

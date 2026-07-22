@@ -18,11 +18,14 @@
 #include "server_common_const_od.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "fbsec_secure_od.h"
 
 #if FBSEC_FEATURE_ASYM
 #include "server_common_asym.h"
+#include "fbsec_asym.h"
+#include "fbsec_asym_demo.h"
 #endif
 
 int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path,
@@ -34,6 +37,20 @@ int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path,
 
 #if FBSEC_FEATURE_ASYM
   fbsec_server_asym_init();   /* device identity store (IDevID, anchor, ...) */
+
+  /* Pre-install the demo integrator public key as the authorizing peer for
+     C042h signed writes and C049h signed commands. A real device installs
+     this at commissioning; the demo derives it from the shared demo seed so
+     the client's integrator signature verifies out of the box. */
+  {
+    const uint8_t integ_seed[FBSEC_ASYM_SEED_SIZE] = FBSEC_DEMO_INTEGRATOR_SEED_BYTES;
+    fbsec_keypair_t integ;
+    fbsec_pubkey_t  integ_pub;
+    if (fbsec_asym_keygen(integ_seed, &integ)) {
+      memcpy(integ_pub.pub, integ.pub, FBSEC_ASYM_PUBKEY_SIZE);
+      (void)fbsec_server_asym_set_peer(1u, &integ_pub);
+    }
+  }
 #endif
 
   /* Load the constant, unsecured OD entries (object 1018h etc.) before

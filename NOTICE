@@ -24,6 +24,21 @@ third_party/mbedtls/
 
     Upstream project: https://github.com/Mbed-TLS/mbedtls
 
+third_party/monocypher/
+    The Ed25519 subset of Monocypher is vendored under
+    third_party/monocypher/ for the optional RPK (raw-public-key)
+    identity layer. Only the files SOFA needs are included:
+    monocypher.c, monocypher-ed25519.c and monocypher-ed25519.h. The
+    retained source files are otherwise unmodified.
+
+    Monocypher is provided by Loup Vaillant and contributors under a dual
+    BSD-2-Clause OR CC-0 license. SOFA takes Monocypher under the
+    BSD-2-Clause option, consistent with SOFA's own license. The full
+    upstream license text is preserved at third_party/monocypher/LICENSE.
+
+    Upstream project: https://monocypher.org
+    (repository https://github.com/LoupVaillant/Monocypher)
+
 ------------------------------------------------------------------------
 Optional runtime dependency (not redistributed)
 ------------------------------------------------------------------------

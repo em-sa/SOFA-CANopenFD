@@ -44,6 +44,17 @@ static uint8_t g_secure_ro[FBSEC_SERVER_ENTRY_SECURE_LEN];
 /* SECURE_WO 0x20160000 backing store (16-byte demo write target). */
 static uint8_t g_secure_wo[FBSEC_SERVER_ENTRY_SECURE_LEN];
 
+#if FBSEC_FEATURE_ASYM
+/* RPK read twin 0x20210000: 4-byte value that auto-bumps on read, mirror of
+   g_value but reached only through C042h signed read. */
+static uint8_t g_rpk_ro[FBSEC_SERVER_ENTRY_VALUE_LEN] = {
+  0xA0u, 0xA1u, 0xA2u, 0xA3u
+};
+
+/* RPK write twin 0x20170000: 16-byte C042h signed-write target. */
+static uint8_t g_rpk_wo[FBSEC_SERVER_ENTRY_SECURE_LEN];
+#endif
+
 /* ---- Setup / accessors ----------------------------------------------- */
 
 void fbsec_server_hooks_set_my_dev(uint16_t my_dev) {
@@ -65,6 +76,12 @@ const uint8_t *fbsec_server_hooks_secure_ro(void) {
 const uint8_t *fbsec_server_hooks_secure_wo(void) {
   return g_secure_wo;
 }
+
+#if FBSEC_FEATURE_ASYM
+const uint8_t *fbsec_server_hooks_rpk_wo(void) {
+  return g_rpk_wo;
+}
+#endif
 
 /* ---- Port hook: device id -------------------------------------------- */
 
@@ -159,6 +176,24 @@ fbsec_abort_t fbsec_sod_port_read_before(uint32_t data_id,
     g_value[3] = (uint8_t)( v        & 0xFFu);
     return FBSEC_ABORT_NONE;
   }
+#if FBSEC_FEATURE_ASYM
+  if (data_id == FBSEC_SERVER_ENTRY_RPK_RD_DATA_ID) {
+    /* RPK read twin: return current value, then bump (big-endian +1) so
+       successive signed reads visibly tick, mirroring 0x20200000. */
+    memcpy(dst, g_rpk_ro, FBSEC_SERVER_ENTRY_VALUE_LEN);
+    *len = FBSEC_SERVER_ENTRY_VALUE_LEN;
+    uint32_t rv = ((uint32_t)g_rpk_ro[0] << 24)
+                | ((uint32_t)g_rpk_ro[1] << 16)
+                | ((uint32_t)g_rpk_ro[2] <<  8)
+                |  (uint32_t)g_rpk_ro[3];
+    rv++;
+    g_rpk_ro[0] = (uint8_t)((rv >> 24) & 0xFFu);
+    g_rpk_ro[1] = (uint8_t)((rv >> 16) & 0xFFu);
+    g_rpk_ro[2] = (uint8_t)((rv >>  8) & 0xFFu);
+    g_rpk_ro[3] = (uint8_t)( rv        & 0xFFu);
+    return FBSEC_ABORT_NONE;
+  }
+#endif
   *len = 0u;
   return FBSEC_ABORT_NO_OBJECT;
 }
@@ -182,6 +217,15 @@ fbsec_abort_t fbsec_sod_port_write_after(uint32_t       data_id,
     memcpy(g_value, src, FBSEC_SERVER_ENTRY_VALUE_LEN);
     return FBSEC_ABORT_NONE;
   }
+#if FBSEC_FEATURE_ASYM
+  if (data_id == FBSEC_SERVER_ENTRY_RPK_WR_DATA_ID) {
+    if (len != FBSEC_SERVER_ENTRY_SECURE_LEN) {
+      return FBSEC_ABORT_TYPE_MISMATCH;
+    }
+    memcpy(g_rpk_wo, src, FBSEC_SERVER_ENTRY_SECURE_LEN);
+    return FBSEC_ABORT_NONE;
+  }
+#endif
   return FBSEC_ABORT_NO_OBJECT;
 }
 

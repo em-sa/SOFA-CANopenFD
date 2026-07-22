@@ -50,7 +50,7 @@ static uint32_t get_u32le(const uint8_t *p)
 
 /* ---- C000h capabilities ---------------------------------------------- */
 
-void fbsec_descriptor_build_caps(fbsec_caps_t *out)
+void fbsec_descriptor_build_caps(uint8_t live_id_flags, fbsec_caps_t *out)
 {
   if (out == NULL)
   {
@@ -59,25 +59,42 @@ void fbsec_descriptor_build_caps(fbsec_caps_t *out)
 
   out->highest_sub = FBSEC_DESC_CAP_SUB_MAX;
 
-  /* Pass 1 is AEAD-only: profile 00h Custom, capability level 0,
-   * restore depth 0, mechanisms bitmap = AEAD only, suite generation 0.
-   * RPK and X509 are never advertised this pass, even in an asym build. */
-  out->type_word = FBSEC_TYPEWORD(FBSEC_PROFILE_CUSTOM, 0u, 0u,
-                                  FBSEC_MECH_AEAD, 0u);
+  /* Profile 00h Custom in every build: the device is deliberately partial
+   * (no X509, no AEAD generic access, no function-command AEAD twin), so it
+   * makes no numbered-profile conformance claim. Capability level 0,
+   * restore depth 0, suite generation 0. */
+#if FBSEC_FEATURE_ASYM
+  /* Asymmetric build: advertise AEAD | RPK, Ed25519 identity, and the
+   * voucher handover when the authorized model is compiled. */
+  out->type_word      = FBSEC_TYPEWORD(FBSEC_PROFILE_CUSTOM, 0u, 0u,
+                                       FBSEC_MECH_AEAD | FBSEC_MECH_RPK, 0u);
+  out->rpk_alg        = FBSEC_DESC_RPK_ED25519;
+  /* Sub 05h reports live identity state (b0 IDevID, b1 LDevID); the caller
+   * supplies it from the asym store so an LDevID export shows up at once. */
+  out->id_flags       = live_id_flags;
+  out->handover_model = FBSEC_DESC_HANDOVER_TOFU
+#if FBSEC_HANDOVER_AUTHORIZED
+                      | FBSEC_DESC_HANDOVER_VOUCHER
+#endif
+                      ;
+#else
+  /* AEAD-only build: mechanisms bitmap = AEAD only, no RPK, no identity
+   * artifacts, TOFU handover. The demo ships with keys already loaded and
+   * runs as if a claim-on-first-use handover happened in the past. */
+  (void)live_id_flags;
+  out->type_word      = FBSEC_TYPEWORD(FBSEC_PROFILE_CUSTOM, 0u, 0u,
+                                       FBSEC_MECH_AEAD, 0u);
+  out->rpk_alg        = FBSEC_DESC_RPK_NONE;
+  out->id_flags       = 0u;
+  out->handover_model = FBSEC_DESC_HANDOVER_TOFU;
+#endif
 
-  /* Sub 02h: session protocols. FBsec only this pass. */
+  /* Sub 02h: session protocols. FBsec only. */
   out->session_proto = FBSEC_DESC_PROTO_FBSEC;
 
   /* Sub 03h: AEAD bitmap (byte 0) + tag length (byte 1). */
   out->aead_and_tag = (uint32_t)desc_aead_bitmap() |
                       (((uint32_t)(FBSEC_AEAD_TAG_LEN_BYTES) & 0xFFu) << 8);
-
-  /* Sub 04h..06h: no RPK, no identity artifacts, TOFU handover.
-   * The demo ships with keys already loaded and runs as if a
-   * claim-on-first-use handover happened in the past. */
-  out->rpk_alg        = FBSEC_DESC_RPK_NONE;
-  out->id_flags       = 0u;
-  out->handover_model = FBSEC_DESC_HANDOVER_TOFU;
 
   /* Sub 07h: manufacturer-specific capabilities. */
   out->mfg_caps = 0u;
@@ -241,13 +258,6 @@ bool fbsec_status_deserialize_sub(fbsec_status_t *s, uint8_t sub,
 }
 
 /* ---- Client-side predicates ------------------------------------------ */
-
-bool fbsec_caps_supports_signed_fbsec(const fbsec_caps_t *c)
-{
-  return (c != NULL) &&
-         ((c->session_proto & FBSEC_DESC_PROTO_SIGNED_FBSEC) != 0u) &&
-         ((c->id_flags & FBSEC_DESC_ID_SIGNED_FBSEC) != 0u);
-}
 
 bool fbsec_caps_supports_voucher_handover(const fbsec_caps_t *c)
 {

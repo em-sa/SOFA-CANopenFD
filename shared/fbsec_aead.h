@@ -121,28 +121,19 @@ extern "C" {
  *   bit 7    : encryption flag
  *   bit 6    : cyclic-arm flag (meaningful only on READ_CHALLENGE
  *              and WRITE_CHALLENGE; ignored on poll directions)
- *   bit  5    : signed-FBsec flag (only when FBSEC_ASYM_SIGNED_FBSEC is
- *              built; otherwise reserved). Set on the establishment verb
- *              to request an Ed25519 signature trailer (spec 11.6.5).
- *   bit  4    : reserved, must be 0; verifier rejects non-zero with
+ *   bits 5-4 : reserved, must be 0; verifier rejects non-zero with
  *              FBSEC_ABORT_KEY_ID (C4h) so future bit assignments do
  *              not silently collide with old peers
  *   bits 3-0 : base key identifier (1..15)
  *
  * The whole key_id byte is part of the AAD prefix at offset 3, so a
- * downgrade attempt (flipping bit 7 / bit 6 / bit 5, repurposing the
- * reserved bit, or swapping the base id) fails AEAD verification. */
+ * downgrade attempt (flipping bit 7 / bit 6, repurposing a reserved
+ * bit, or swapping the base id) fails AEAD verification. */
 #define FBSEC_AEAD_MECHANISM_FOR(kid) \
     ((uint8_t)(((uint8_t)(kid) & 0x80u) | FBSEC_AEAD_PRIMITIVE_ID))
 #define FBSEC_AEAD_KEYID_ENCRYPT(kid)       (((uint8_t)(kid) & 0x80u) != 0u)
 #define FBSEC_AEAD_KEYID_IS_CYCLIC(kid)     (((uint8_t)(kid) & 0x40u) != 0u)
-#if FBSEC_ASYM_SIGNED_FBSEC
-#define FBSEC_AEAD_KEYID_SIGNED(kid)        (((uint8_t)(kid) & 0x20u) != 0u)
-#define FBSEC_AEAD_KEYID_RESERVED(kid)      ((uint8_t)(((uint8_t)(kid) >> 4) & 0x01u))
-#else
-#define FBSEC_AEAD_KEYID_SIGNED(kid)        (false)
 #define FBSEC_AEAD_KEYID_RESERVED(kid)      ((uint8_t)(((uint8_t)(kid) >> 4) & 0x03u))
-#endif
 #define FBSEC_AEAD_KEYID_BASE(kid)          ((uint8_t)((uint8_t)(kid) & 0x0Fu))
 #define FBSEC_AEAD_KEYID_MAX                15u
 

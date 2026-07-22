@@ -158,6 +158,21 @@ const uint8_t *fbsec_const_od_get(uint16_t index, uint8_t sub,
   return NULL;
 }
 
+uint8_t fbsec_const_od_count(void) {
+  return g_count;
+}
+
+const uint8_t *fbsec_const_od_at(uint8_t pos, uint16_t *index_out,
+                                 uint8_t *sub_out, uint16_t *len_out) {
+  if (pos >= g_count) {
+    return NULL;
+  }
+  if (index_out != NULL) { *index_out = g_table[pos].index; }
+  if (sub_out != NULL)   { *sub_out   = g_table[pos].sub; }
+  if (len_out != NULL)   { *len_out   = g_table[pos].len; }
+  return g_table[pos].data;
+}
+
 bool fbsec_const_od_get_identity(uint8_t out16[16]) {
   uint16_t off = 0u;
   uint8_t  sub;

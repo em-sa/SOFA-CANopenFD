@@ -31,6 +31,12 @@
 #include "fbsec_secure_proto.h"
 #include "fbsec_descriptor.h"
 
+#if FBSEC_FEATURE_ASYM
+#include "fbsec_asym.h"
+#include "client_common_rpk.h"
+#include "client_common_commission.h"
+#endif
+
 /* ---- Menu constants -------------------------------------------------- */
 
 #define MENU_POLL_COUNT     300u
@@ -541,12 +547,11 @@ static bool interpret_sub(uint16_t index, uint8_t sub,
           return true;
         }
         case 0x02u:
-          (void)snprintf(out, outsz, "session protocols:%s%s%s%s%s",
+          (void)snprintf(out, outsz, "session protocols:%s%s%s%s",
             ((v & FBSEC_DESC_PROTO_FBSEC) != 0u)        ? " FBsec" : "",
             ((v & FBSEC_DESC_PROTO_TLS_PSK) != 0u)      ? " TLS-PSK" : "",
             ((v & FBSEC_DESC_PROTO_CTLS) != 0u)         ? " cTLS" : "",
-            ((v & FBSEC_DESC_PROTO_TLS13) != 0u)        ? " TLS1.3" : "",
-            ((v & FBSEC_DESC_PROTO_SIGNED_FBSEC) != 0u) ? " signed-FBsec" : "");
+            ((v & FBSEC_DESC_PROTO_TLS13) != 0u)        ? " TLS1.3" : "");
           return true;
         case 0x03u:
           (void)snprintf(out, outsz, "%s, tag %u bytes",
@@ -562,10 +567,9 @@ static bool interpret_sub(uint16_t index, uint8_t sub,
           if (v == 0u) {
             (void)snprintf(out, outsz, "identity flags: none");
           } else {
-            (void)snprintf(out, outsz, "identity flags:%s%s%s%s",
+            (void)snprintf(out, outsz, "identity flags:%s%s%s",
               ((v & FBSEC_DESC_ID_IDEVID) != 0u)       ? " IDevID" : "",
               ((v & FBSEC_DESC_ID_LDEVID) != 0u)       ? " LDevID" : "",
-              ((v & FBSEC_DESC_ID_SIGNED_FBSEC) != 0u) ? " signed-FBsec" : "",
               ((v & FBSEC_DESC_ID_X509) != 0u)         ? " X509" : "");
           }
           return true;
@@ -653,6 +657,28 @@ static bool interpret_sub(uint16_t index, uint8_t sub,
           return false;
       }
     }
+    case 0xC021u: {
+      const char *role = (sub == 0x01u) ? "Manufacturer"
+                       : (sub == 0x02u) ? "Integrator" : "Public";
+      bool     all_zero = true;
+      uint32_t i;
+      for (i = 0u; i < len; ++i) {
+        if (b[i] != 0u) { all_zero = false; break; }
+      }
+      if (all_zero) {
+        (void)snprintf(out, outsz, "%s public key: not installed", role);
+      } else {
+        (void)snprintf(out, outsz,
+          "%s public key: %02X%02X%02X%02X..%02X%02X (Ed25519, %u bytes)",
+          role, b[0], b[1], b[2], b[3], b[len - 2u], b[len - 1u],
+          (unsigned)len);
+      }
+      return true;
+    }
+    case 0xC022u:
+      (void)snprintf(out, outsz, "public key type: %s, length %u bytes",
+        (b[0] == 0x01u) ? "Ed25519" : "reserved", (unsigned)b[1]);
+      return true;
     default:
       return false;
   }
@@ -734,6 +760,10 @@ static void scan_security_params(const fbsec_secure_transport_t *transport,
     { 0xC000u, "capabilities" },
     { 0xC001u, "status" },
     { 0xC011u, "AEAD key ids" },
+#if FBSEC_FEATURE_ASYM
+    { 0xC021u, "public keys" },
+    { 0xC022u, "public key types" },
+#endif
     { 0x1018u, "identity" },
   };
   size_t i;
@@ -785,8 +815,9 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
     printf("=== fbsec client menu  (target 0x%02X  bus %s  %s) ===\n",
            (unsigned)(target & 0xFFu), cfg->bus_label,
            fbsec_client_keys_use_encryption() ? "encrypt+auth" : "auth-only (MAC)");
-    printf("  A) %-24s  reads C000/C001/C011/1018 (no key)\n",
+    printf("  0) %-24s  reads the const security params (no key)\n",
            "Scan security parameters");
+    printf("  --- AEAD (AES-128-GCM) ---\n");
     printf("  1) %-24s  SRD 0x%06X\n",
            "Single 16-byte read",
            MENU_DATA_ID24(MENU_ID_DATA_ID));
@@ -812,6 +843,18 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
            cyc_label,
            MENU_DATA_ID24(MENU_WR_DATA_ID),
            (unsigned)MENU_POLL_COUNT, (unsigned)MENU_POLL_DELAY_MS);
+#if FBSEC_FEATURE_ASYM
+    printf("  --- RPK (Ed25519 signed) ---\n");
+    printf("  A) %-24s  C028h  signed identity read (RPK)\n",
+           "Signed identity read");
+    printf("  B) %-24s  C042h->0x2021 signed read (RPK)\n",
+           "Signed read");
+    printf("  C) %-24s  C042h->0x2017 signed write (RPK)\n",
+           "Signed write");
+    printf("  D) %-24s  C049h  signed function command (RPK)\n",
+           "Signed command");
+#endif
+    printf("  --------------------------\n");
     printf("  Q) Quit\n");
     printf("Choice: ");
     fflush(stdout);
@@ -829,7 +872,7 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
     }
 
     printf("\n");
-    if (c == 'a' || c == 'A') {
+    if (c == '0') {
       scan_security_params(transport, target, cfg->timeout_ms);
       continue;
     }
@@ -865,6 +908,63 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
       (void)poll_read_loop(transport, target, cfg->timeout_ms);
     } else if (strcmp(line, "6") == 0) {
       (void)poll_write_loop(transport, target, cfg->timeout_ms);
+#if FBSEC_FEATURE_ASYM
+    } else if (c == 'a' || c == 'A') {
+      int rc = fbsec_commission_verify_genuineness(transport, target,
+                                                   cfg->timeout_ms);
+      if (rc == 0) {
+        printf("  signed identity verified (C028h): device genuine\n");
+      } else {
+        printf("  signed identity read failed (rc=%d)\n", rc);
+      }
+    } else if (c == 'b' || c == 'B') {
+      uint8_t  buf[FBSEC_RPK_VALUE_MAX];
+      uint32_t n  = 0u;
+      int rc = fbsec_rpk_signed_read(transport, target, 0x2021u, 0x00u,
+                                     buf, sizeof buf, &n, cfg->timeout_ms);
+      if (rc == 0) {
+        uint32_t i;
+        printf("  C042h signed read OK, %u bytes:", (unsigned)n);
+        for (i = 0u; i < n; ++i) { printf(" %02X", buf[i]); }
+        printf("  (device signature verified)\n");
+      } else {
+        printf("  C042h signed read failed (rc=%d)\n", rc);
+      }
+    } else if (c == 'c' || c == 'C') {
+      uint8_t buf[MENU_BIN_LEN];
+      buf[0] = (uint8_t)((bin_counter >> 24) & 0xFFu);
+      buf[1] = (uint8_t)((bin_counter >> 16) & 0xFFu);
+      buf[2] = (uint8_t)((bin_counter >>  8) & 0xFFu);
+      buf[3] = (uint8_t)( bin_counter        & 0xFFu);
+      memset(&buf[4], 0xDDu, MENU_BIN_LEN - 4u);
+      {
+        int rc = fbsec_rpk_signed_write(transport, target, 0x2017u, 0x00u,
+                                        buf, MENU_BIN_LEN, cfg->timeout_ms);
+        if (rc == 0) {
+          printf("  C042h signed write OK (0x2017)\n");
+        } else {
+          printf("  C042h signed write failed (rc=%d)\n", rc);
+        }
+      }
+      ++bin_counter;
+    } else if (c == 'd' || c == 'D') {
+      char     codeline[16];
+      uint32_t code = 0x0001u;
+      printf("Command code (hex, blank = 0001): ");
+      fflush(stdout);
+      if (read_line(codeline, sizeof codeline) != 0 && codeline[0] != '\0') {
+        code = (uint32_t)strtoul(codeline, NULL, 16);
+      }
+      {
+        int rc = fbsec_rpk_command(transport, target, code, cfg->timeout_ms);
+        if (rc == 0) {
+          printf("  C049h command 0x%08lX sent and acknowledged\n",
+                 (unsigned long)code);
+        } else {
+          printf("  C049h command failed (rc=%d)\n", rc);
+        }
+      }
+#endif
     } else {
       printf("?? unrecognised choice: %s\n", line);
     }

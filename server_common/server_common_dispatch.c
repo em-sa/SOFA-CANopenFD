@@ -26,18 +26,14 @@
 #if FBSEC_FEATURE_ASYM
 #include "server_common_asym.h"
 #include "server_common_handover.h"
+#include "server_common_rpk.h"
 #endif
 
 /* Worst-case secure reply: server_random[R] + cipher[N_MAX] + tag[T]
    = 12 + 32 + 8 = 52 bytes at default AEAD config. Round up to 64
    for a comfortable margin (fits the CAN FD 64-byte payload bound
-   exactly). Signed-FBsec appends a 64-byte Ed25519 trailer, so the
-   buffer grows to hold server_random + cipher + tag + signature. */
-#if FBSEC_ASYM_SIGNED_FBSEC
-#define FBSEC_SERVER_DISPATCH_REPLY_MAX 128u
-#else
+   exactly). */
 #define FBSEC_SERVER_DISPATCH_REPLY_MAX 64u
-#endif
 
 /**
  * @brief Serve a read of the capability/status descriptor (read-only,
@@ -98,7 +94,18 @@ static bool try_serve_descriptor(uint16_t src_dev, uint32_t data_id,
     }
   } else {
     fbsec_caps_t caps;
-    fbsec_descriptor_build_caps(&caps);
+    uint8_t live_id_flags = 0u;
+#if FBSEC_FEATURE_ASYM
+    /* Sub 05h reports live identity state; feed it from the asym store so
+       an LDevID export shows up in the same session. */
+    if (fbsec_server_asym_idevid_present()) {
+      live_id_flags |= FBSEC_DESC_ID_IDEVID;
+    }
+    if (fbsec_server_asym_ldevid_present()) {
+      live_id_flags |= FBSEC_DESC_ID_LDEVID;
+    }
+#endif
+    fbsec_descriptor_build_caps(live_id_flags, &caps);
     highest = caps.highest_sub;
     sub_exists = ((data_id & 0xFFu) == 0u) && (sub <= highest);
     if (sub_exists && (payload_len == 0u)) {
@@ -231,10 +238,17 @@ void fbsec_server_dispatch_request(uint16_t            src_dev,
   }
 
 #if FBSEC_FEATURE_ASYM
-  /* Handover objects (identity read, voucher, epoch, provisioning install,
-     LDevID export) are served by the handover module (spec 11.6.6). */
+  /* Handover objects: signed identity read (C028h), ownership control
+     (C020h voucher/epoch/LDevID), provisioning install (C02Fh). */
   if (fbsec_server_handover_try(src_dev, data_id, payload, payload_len,
                                 send_reply, user)) {
+    return;
+  }
+
+  /* RPK secure objects: public keys (C021h/C022h), signed generic access
+     (C042h) and signed function command (C049h). */
+  if (fbsec_server_rpk_try(src_dev, data_id, payload, payload_len,
+                           send_reply, user)) {
     return;
   }
 #endif

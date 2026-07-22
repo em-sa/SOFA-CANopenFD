@@ -8,22 +8,31 @@
  * @version V1.0 of 07-MAY-2026
  *
  * REPL that prompts for a target device id, then offers a security-
- * parameter scan plus six demo actions against the four hardcoded
- * SECURE_RO/WO data_ids:
+ * parameter scan plus the AEAD and RPK demo actions:
  *
- *   A) unsecured scan of the constant security parameters
- *      (C000h capabilities, C001h status, C011h key ids, 1018h identity)
+ *   0) unsecured scan of the constant security parameters
+ *      (C000h capabilities, C001h status, C011h key ids, in an RPK build
+ *      also C021h/C022h public keys, and 1018h identity)
  *   1) SRD 0xC018:00  - single 16-byte read (1018h authenticated identity)
  *   2) SWR 0x2016:00  - single 16-byte write (incrementing counter)
  *   3) SRD 0x2020:00  - single 4-byte read of the shadow value
  *   4) SWR 0x2010:00  - single 4-byte write (auto-increments)
  *   5) SRD 0x2020:00  - 300 cyclic reads, 200 ms apart
  *   6) SWR 0x2010:00  - 300 cyclic writes, 200 ms apart
+ *
+ * The RPK (Ed25519 signed) set is present only in an FBSEC_FEATURE_ASYM
+ * build:
+ *
+ *   A) C028h          - signed identity read (device IDevID)
+ *   B) C042h -> 0x2021 - signed generic read (signature replaces the tag)
+ *   C) C042h -> 0x2017 - signed generic write (client signs)
+ *   D) C049h          - signed function command
  *   Q)                - quit
  *
- * All options are secure verbs; no plain rd/wr in the menu. Demo key
- * + encryption flag come from `client_common_keys` (prompted at menu
- * startup if not pre-set via --key / --main-key).
+ * The AEAD options are secure verbs; the RPK options carry an Ed25519
+ * signature in place of the AEAD tag. Demo key + encryption flag come from
+ * `client_common_keys` (prompted at menu startup if not pre-set via
+ * --key / --main-key).
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0

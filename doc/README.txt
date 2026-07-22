@@ -30,8 +30,8 @@ PROJECT SUMMARY
   bus simulator (port 5810), optionally bridged to a real CAN FD
   network via PEAK PCAN-Basic. Future variants (generic, CANopen CC,
   EtherCAT) will plug into the same secure-tunnel core and reuse the
-  same four secure verbs and the same four secure-only object-
-  dictionary entries.
+  same four secure verbs and the same secure-only object-dictionary
+  entries.
 
 
 PUBLISHED DOWNLOADS
@@ -114,6 +114,49 @@ STANDARDS ALIGNMENT
       authentication is achieved as a side-effect of
       authenticated data access; there is no session-establishment
       handshake independent of a specific data object.
+
+
+SECURITY OBJECT DICTIONARY (CiA 720 C0xxh)
+
+  The implemented entries in the reserved security range. The full
+  per-subindex reference is in the user manual, chapter 5.
+
+  AEAD (symmetric) objects:
+
+    - C000h   Security profile and capabilities. Unauthenticated;
+              a tool learns the device class in one cold read.
+    - C001h   Security status. Non-secret operational state, no
+              key material.
+    - C010h   Session pre-requisites. Write-only session salt that
+              arms a session for key derivation.
+    - C011h   AEAD key identifiers. Non-secret key ids for slot
+              discovery.
+    - C018h   Authenticated identification. AEAD-tagged read of the
+              device identity (object 1018h quadruple).
+    - C01Fh   Key set. Write-only symmetric key install and rotation.
+
+  RPK (Ed25519 raw-public-key) objects, built when the RPK layer is
+  enabled:
+
+    - C020h   Ownership control. Voucher claim, owner epoch, and
+              LDevID generate and export.
+    - C021h   Public keys. Verification public keys the device holds.
+    - C022h   Public key types. Algorithm id and length for the keys
+              in C021h.
+    - C028h   Authenticated identification, signed. The Ed25519
+              flavor of the identity read in C018h.
+    - C02Fh   Provisioning key install, signed. Bootstraps the
+              symmetric provisioning key on an identity-only device.
+    - C042h   Generic secure access, RPK. The signed sibling of the
+              AEAD generic access.
+    - C049h   Secure function command, RPK. A signed function code
+              for high-value commands.
+
+  Protection is by replacement, not addition: a secure entry is
+  guarded by the AEAD tag or by an Ed25519 signature, never by both.
+  On a signed entry the signature replaces the tag, and freshness
+  comes from the two-pass challenge, so the signature always covers
+  randomness the verifier contributed.
 
 
 --------------------------------------------------------------------------------

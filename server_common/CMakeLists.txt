@@ -41,6 +41,8 @@ if(FBSEC_FEATURE_ASYM)
     server_common_asym.h
     server_common_handover.c
     server_common_handover.h
+    server_common_rpk.c
+    server_common_rpk.h
   )
 endif()
 

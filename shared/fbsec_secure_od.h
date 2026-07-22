@@ -264,24 +264,6 @@ fbsec_abort_t fbsec_sod_port_write_after(uint32_t data_id,
                                          const uint8_t *src,
                                          uint16_t len);
 
-#if FBSEC_ASYM_SIGNED_FBSEC
-/**
- * @brief Sign @p msg with this device's runtime identity (for signed-FBsec
- *        server-to-client authentication). Host-implemented.
- * @retval true  @p sig filled with a 64-byte Ed25519 signature.
- */
-bool fbsec_sod_port_sign(uint8_t role_dir, const uint8_t *msg, uint16_t len,
-                         uint8_t sig[FBSEC_ASYM_SIG_SIZE]);
-
-/**
- * @brief Fetch the runtime-identity public key of peer @p client_dev
- *        (to verify a signed-FBsec client-to-server signature).
- * @retval true  @p pub filled; false if the peer identity is unknown.
- */
-bool fbsec_sod_port_peer_pubkey(uint16_t client_dev,
-                                uint8_t pub[FBSEC_ASYM_PUBKEY_SIZE]);
-#endif /* FBSEC_ASYM_SIGNED_FBSEC */
-
 #ifdef __cplusplus
 }
 #endif

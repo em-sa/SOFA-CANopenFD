@@ -137,12 +137,13 @@
 /* ---- Optional asymmetric identity (WP-105 sec 5, WP-104 sec 2/5-6) ---- */
 
 /* Master gate for the whole optional Ed25519 identity layer (capability/
- * status descriptors, IDevID/LDevID, signed-FBsec, handover). Default
- * OFF: with this 0 the wire behaviour is byte-identical to the
- * symmetric-only build and none of the asymmetric code is compiled.
- * See doc/fieldbus_sim_secure_tunnel_spec.txt sections 11.5-11.6. */
+ * status descriptors, IDevID/LDevID, RPK secure objects, handover). Default
+ * ON: a stock build ships the RPK mechanism and advertises it in C000h. Set
+ * to 0 for a minimal AEAD-only device: the wire behaviour is then
+ * byte-identical to the symmetric-only build and none of the asymmetric code
+ * is compiled. */
 #ifndef FBSEC_FEATURE_ASYM
-#  define FBSEC_FEATURE_ASYM        0
+#  define FBSEC_FEATURE_ASYM        1
 #endif
 
 /* Asymmetric primitive backend. Exactly one must be 1 when
@@ -151,19 +152,13 @@
 #  define FBSEC_ASYM_ED25519        FBSEC_FEATURE_ASYM
 #endif
 
-/* Runtime signed-FBsec mutual authentication: append an Ed25519
- * signature to each establishment verb so the exchange is mutually
- * authenticated (spec section 11.6.5). Confined to establishment verbs;
- * poll frames are never signed, so this coexists with FEATURE_CYCLIC. */
-#ifndef FBSEC_ASYM_SIGNED_FBSEC
-#  define FBSEC_ASYM_SIGNED_FBSEC   FBSEC_FEATURE_ASYM
-#endif
-
 /* Handover model: 0 = basic (born-open / integrator-rooted, no
  * voucher), 1 = authorized (adds ownership voucher + owner epoch +
- * integrator-authorization; spec section 11.6.6). */
+ * integrator-authorization). Default ON so the voucher claim (C020h:01h)
+ * and owner epoch (C020h:02h) objects are live and the RPK handover story
+ * is complete; requires FBSEC_FEATURE_ASYM. */
 #ifndef FBSEC_HANDOVER_AUTHORIZED
-#  define FBSEC_HANDOVER_AUTHORIZED 0
+#  define FBSEC_HANDOVER_AUTHORIZED FBSEC_FEATURE_ASYM
 #endif
 
 /* ---- Per-(key, session) frame budget --------------------------------- */
@@ -236,10 +231,6 @@
 
 #if FBSEC_FEATURE_ASYM && ((FBSEC_ASYM_ED25519) != 1)
 #  error "FBSEC_FEATURE_ASYM needs exactly one asymmetric backend (only Ed25519 is implemented)."
-#endif
-
-#if FBSEC_ASYM_SIGNED_FBSEC && !FBSEC_FEATURE_ASYM
-#  error "FBSEC_ASYM_SIGNED_FBSEC requires FBSEC_FEATURE_ASYM == 1."
 #endif
 
 #if FBSEC_HANDOVER_AUTHORIZED && !FBSEC_FEATURE_ASYM

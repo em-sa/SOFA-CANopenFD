@@ -70,8 +70,8 @@
 #define DEFAULT_BUS_PORT     5810
 #define DEFAULT_NODE_ID      0x7Fu        /* announced; demo client convention */
 #define DEFAULT_NAME         "fbsec_co_fd_client"
-#define VERSION_STR          "V1.0"
-#define VERSION_DATE_STR     "07-MAY-2026"
+#define VERSION_STR          "V1.1"
+#define VERSION_DATE_STR     "22-JUL-2026"
 #define EXEC_NAME            "fbsec_co_fd_client"
 #define BANNER_NAME          "SOFA CANopen FD Client"
 
@@ -218,9 +218,8 @@ static void print_caps(uint32_t target, const fbsec_caps_t *caps) {
            (unsigned)FBSEC_TYPEWORD_SUITE(caps->type_word));
   }
   if (caps->highest_sub >= 0x02u) {
-    printf("  session-protocol bitmap : 0x%08lX (signed-FBsec %s)\n",
-           (unsigned long)caps->session_proto,
-           fbsec_caps_supports_signed_fbsec(caps) ? "yes" : "no");
+    printf("  session-protocol bitmap : 0x%08lX\n",
+           (unsigned long)caps->session_proto);
   }
   if (caps->highest_sub >= 0x03u) {
     printf("  AEAD / tag length       : 0x%08lX (%s, tag %u bytes)\n",

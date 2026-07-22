@@ -45,9 +45,6 @@
 
 #include "fbsec_abort.h"
 #include "fbsec_aead.h"
-#if FBSEC_FEATURE_ASYM
-#include "fbsec_asym.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -163,22 +160,6 @@ bool fbsec_secure_port_random(uint8_t *buf, uint16_t len);
  */
 uint16_t fbsec_secure_port_get_client_id(void);
 
-#if FBSEC_ASYM_SIGNED_FBSEC
-/**
- * @brief Sign @p msg with this client's runtime identity (signed-FBsec
- *        client-to-server authentication). Host-implemented.
- */
-bool fbsec_secure_port_sign(uint8_t role_dir, const uint8_t *msg, uint16_t len,
-                            uint8_t sig[FBSEC_ASYM_SIG_SIZE]);
-
-/**
- * @brief Fetch the runtime-identity public key of server @p device_id
- *        (to verify a signed-FBsec server-to-client signature).
- */
-bool fbsec_secure_port_peer_pubkey(uint16_t device_id,
-                                   uint8_t pub[FBSEC_ASYM_PUBKEY_SIZE]);
-#endif /* FBSEC_ASYM_SIGNED_FBSEC */
-
 /* ---- Public secure-flow entry points ---------------------------------- */
 
 #if FBSEC_FEATURE_READ
@@ -231,40 +212,6 @@ fbsec_secure_status_t fbsec_secure_write(
   uint32_t       timeout_ms,
   fbsec_abort_t *abort_out);
 #endif /* FBSEC_FEATURE_WRITE */
-
-#if FBSEC_ASYM_SIGNED_FBSEC
-/* ---- Signed-FBsec single-shot (Ed25519 mutual auth; spec 11.6.5) ---- */
-
-#if FBSEC_FEATURE_READ
-/**
- * @brief Secure-read that also verifies the server's Ed25519 signature.
- *
- * Wire-identical to fbsec_secure_read except keyid bit 5 is forced on to
- * request the signature trailer. After the AEAD tag opens, the trailing
- * 64-byte signature is verified against the server's runtime public key
- * (fbsec_secure_port_peer_pubkey); a mismatch returns FBSEC_SECP_TAG.
- */
-fbsec_secure_status_t fbsec_secure_read_signed(
-  const fbsec_secure_transport_t *transport, uint16_t device_id, uint32_t data_id,
-  const uint8_t key[FBSEC_AEAD_KEY_SIZE], uint8_t key_id,
-  uint8_t *buf, uint32_t buf_size, uint32_t timeout_ms,
-  uint32_t *len_out, fbsec_abort_t *abort_out);
-#endif /* FBSEC_FEATURE_READ */
-
-#if FBSEC_FEATURE_WRITE
-/**
- * @brief Secure-write that also proves the client's Ed25519 identity.
- *
- * Wire-identical to fbsec_secure_write except keyid bit 5 is forced on and
- * a 64-byte signature over the transcript (fbsec_secure_port_sign) is
- * appended after the tag. The server verifies it after the AEAD tag.
- */
-fbsec_secure_status_t fbsec_secure_write_signed(
-  const fbsec_secure_transport_t *transport, uint16_t device_id, uint32_t data_id,
-  const uint8_t key[FBSEC_AEAD_KEY_SIZE], uint8_t key_id,
-  const uint8_t *buf, uint32_t len, uint32_t timeout_ms, fbsec_abort_t *abort_out);
-#endif /* FBSEC_FEATURE_WRITE */
-#endif /* FBSEC_ASYM_SIGNED_FBSEC */
 
 #if FBSEC_FEATURE_CYCLIC
 /* ---- Cyclic-mode session API ------------------------------------- */

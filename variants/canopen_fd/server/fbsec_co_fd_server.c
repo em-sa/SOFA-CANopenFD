@@ -44,6 +44,7 @@
 
 #include "server_common_cfg.h"
 #include "server_common_cli.h"
+#include "server_common_const_od.h"
 #include "server_common_dispatch.h"
 #include "server_common_hooks.h"
 #include "server_common_keys.h"
@@ -61,8 +62,8 @@
 #define DEFAULT_BUS_PORT     5810
 #define DEFAULT_NODE_ID      0x05u
 #define DEFAULT_NAME         "fbsec_co_fd_server"
-#define VERSION_STR          "V1.0"
-#define VERSION_DATE_STR     "07-MAY-2026"
+#define VERSION_STR          "V1.1"
+#define VERSION_DATE_STR     "22-JUL-2026"
 #define EXEC_NAME            "fbsec_co_fd_server"
 #define BANNER_NAME          "SOFA CANopen FD Server"
 
@@ -179,23 +180,63 @@ int main(int argc, char **argv) {
   }
 
   fprintf(stderr, "Object Dictionary (USDO mapped):\n");
-  if (fbsec_sod_find_entry(FBSEC_SERVER_ENTRY_SRD_DATA_ID) != NULL) {
-    fprintf(stderr,
-            "  idx 0x%04X sub 0x00  SRD 16-byte 1018h identity (C018h)\n",
-            (unsigned)(FBSEC_SERVER_ENTRY_SRD_DATA_ID >> 16));
-  } else {
-    fprintf(stderr,
-            "  idx 0xC018 (identity) absent: pass --od-file with a 1018h quad\n");
+  fprintf(stderr,
+          "  application data:\n"
+          "    idx 0x%04X sub 0x00  SRD 32-bit u_int (auto-increments)\n"
+          "    idx 0x%04X sub 0x00  SWR 32-bit u_int (mirrors into SRD)\n"
+          "    idx 0x%04X sub 0x00  SWR 16-byte array (last write)\n",
+          (unsigned)(FBSEC_SERVER_ENTRY_RD_DATA_ID >> 16),
+          (unsigned)(FBSEC_SERVER_ENTRY_WR_DATA_ID >> 16),
+          (unsigned)(FBSEC_SERVER_ENTRY_SWR_DATA_ID >> 16));
+  {
+    uint8_t n = fbsec_const_od_count();
+    if (n > 0u) {
+      uint8_t p;
+      fprintf(stderr, "  constant unsecured data (--od-file):\n");
+      for (p = 0u; p < n; ++p) {
+        uint16_t idx = 0u;
+        uint16_t len = 0u;
+        uint8_t  sub = 0u;
+        uint8_t  b;
+        const uint8_t *d = fbsec_const_od_at(p, &idx, &sub, &len);
+        fprintf(stderr, "    idx 0x%04X sub 0x%02X  %u bytes:",
+                (unsigned)idx, (unsigned)sub, (unsigned)len);
+        for (b = 0u; (d != NULL) && (b < len); ++b) {
+          fprintf(stderr, " %02X", d[b]);
+        }
+        fprintf(stderr, "\n");
+      }
+    }
   }
   fprintf(stderr,
-          "  idx 0x%04X sub 0x00  SWR 16-byte array (last write)\n"
-          "  idx 0x%04X sub 0x00  SRD 32-bit u_int (auto-increments)\n"
-          "  idx 0x%04X sub 0x00  SWR 32-bit u_int (mirrors into SRD)\n"
-          "  idx 0xC000/0xC001    capability / status descriptors\n"
-          "  idx 0xC011 sub 0x00  AEAD key ids (slot count + per-slot id)\n",
-          (unsigned)(FBSEC_SERVER_ENTRY_SWR_DATA_ID >> 16),
-          (unsigned)(FBSEC_SERVER_ENTRY_RD_DATA_ID >> 16),
-          (unsigned)(FBSEC_SERVER_ENTRY_WR_DATA_ID >> 16));
+          "  AEAD security objects (CiA 720):\n"
+          "    idx 0xC000/0xC001    capability / status descriptors\n"
+          "    idx 0xC010 sub 0x00  session salt (present, NOT_IMPLEMENTED)\n"
+          "    idx 0xC011 sub 0x00  AEAD key ids (slot count + per-slot id)\n");
+  if (fbsec_sod_find_entry(FBSEC_SERVER_ENTRY_SRD_DATA_ID) != NULL) {
+    fprintf(stderr,
+          "    idx 0xC018 sub 0x00  SRD 16-byte 1018h identity (AEAD)\n");
+  } else {
+    fprintf(stderr,
+          "    idx 0xC018 (identity) absent: pass --od-file with a 1018h quad\n");
+  }
+  fprintf(stderr,
+          "    idx 0xC01F sub 0x00  key set (present, NOT_IMPLEMENTED)\n");
+#if FBSEC_FEATURE_ASYM
+  fprintf(stderr,
+          "  RPK security objects (CiA 720, Ed25519 signed):\n"
+          "    idx 0xC020 sub 1..3  ownership: voucher / epoch / LDevID export\n"
+          "    idx 0xC021 sub 0x00  public keys (manufacturer, integrator)\n"
+          "    idx 0xC022 sub 0x00  public key types\n"
+          "    idx 0xC028 sub 0x00  signed identity read\n"
+          "    idx 0xC02F sub 0x00  provisioning key install (signed)\n"
+          "    idx 0xC042 sub 1..2  generic secure access (signed read/write)\n"
+          "    idx 0xC049 sub 0x00  secure function command (signed)\n"
+          "    idx 0x%04X sub 0x00  RPK read twin  (reached via C042h:01)\n"
+          "    idx 0x%04X sub 0x00  RPK write twin (reached via C042h:02)\n",
+          (unsigned)(FBSEC_SERVER_ENTRY_RPK_RD_DATA_ID >> 16),
+          (unsigned)(FBSEC_SERVER_ENTRY_RPK_WR_DATA_ID >> 16));
+#endif
   fprintf(stderr,
           "key store: keyid 1 (Provisioning Session Key) %s, "
           "keyid 2 (Integrator Session Key) %s, "
@@ -288,12 +329,29 @@ static void print_usage(FILE *f) {
     "  --help              print this and exit 0\n"
     "\n"
     "Object table (USDO mapped):\n"
-    "  idx 0x2020 sub 0x00  SECURE_RO  4 bytes\n"
-    "  idx 0x2010 sub 0x00  SECURE_WO  4 bytes  (shadows into 0x2020)\n"
-    "  idx 0x2016 sub 0x00  SECURE_WO 16 bytes\n"
-    "  idx 0xC018 sub 0x00  SECURE_RO 16 bytes  1018h identity (needs --od-file)\n"
-    "  idx 0xC000/0xC001    capability / status descriptors\n"
-    "  idx 0xC011 sub 0x00  AEAD key ids\n",
+    "  application data:\n"
+    "    idx 0x2020 sub 0x00  SECURE_RO  4 bytes\n"
+    "    idx 0x2010 sub 0x00  SECURE_WO  4 bytes  (shadows into 0x2020)\n"
+    "    idx 0x2016 sub 0x00  SECURE_WO 16 bytes\n"
+    "  AEAD security objects (CiA 720):\n"
+    "    idx 0xC000/0xC001    capability / status descriptors\n"
+    "    idx 0xC010 sub 0x00  session salt (present, NOT_IMPLEMENTED)\n"
+    "    idx 0xC011 sub 0x00  AEAD key ids\n"
+    "    idx 0xC018 sub 0x00  SECURE_RO 16 bytes  1018h identity (needs --od-file)\n"
+    "    idx 0xC01F sub 0x00  key set (present, NOT_IMPLEMENTED)\n"
+#if FBSEC_FEATURE_ASYM
+    "  RPK security objects (CiA 720, Ed25519 signed):\n"
+    "    idx 0xC020 sub 1..3  ownership: voucher / epoch / LDevID export\n"
+    "    idx 0xC021 sub 0x00  public keys (manufacturer, integrator)\n"
+    "    idx 0xC022 sub 0x00  public key types\n"
+    "    idx 0xC028 sub 0x00  signed identity read\n"
+    "    idx 0xC02F sub 0x00  provisioning key install (signed)\n"
+    "    idx 0xC042 sub 1..2  generic secure access (signed read/write)\n"
+    "    idx 0xC049 sub 0x00  secure function command (signed)\n"
+    "    idx 0x2021 sub 0x00  RPK read twin  (reached via C042h:01)\n"
+    "    idx 0x2017 sub 0x00  RPK write twin (reached via C042h:02)\n"
+#endif
+    ,
     DEFAULT_BUS_HOST, DEFAULT_BUS_PORT,
     (unsigned)DEFAULT_NODE_ID, DEFAULT_NAME,
     (unsigned)SIM_NAME_MAX);

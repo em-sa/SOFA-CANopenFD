@@ -95,23 +95,14 @@
 /* On-wire challenge sizes. */
 #define READ_CHALLENGE_LEN        ((uint16_t)(1u + FBSEC_AEAD_RAND_SIZE))       /* 13 */
 #define WRITE_CHALLENGE_LEN       ((uint16_t)FBSEC_AEAD_RAND_SIZE)              /* 12 */
-/* Ed25519 signature trailer appended to the establishment verb in
-   signed-FBsec mode (spec 11.6.5); zero when the mode is not built. */
-#if FBSEC_ASYM_SIGNED_FBSEC
-#define SIGNED_TRAILER_LEN        ((uint16_t)FBSEC_ASYM_SIG_SIZE)
-#else
-#define SIGNED_TRAILER_LEN        0u
-#endif
 
 /* Pre-sealed single-shot read response shape: server_random[R] ||
-   cipher[N] || tag[T] (|| SIG[64] in signed-FBsec mode). The cyclic-
-   capable arm reply is byte-identical to the plain single-shot reply
-   (no session_id on the wire); cyclic state lives in the slot and is
-   keyed by (client_dev, data_id). */
+   cipher[N] || tag[T]. The cyclic-capable arm reply is byte-identical
+   to the plain single-shot reply (no session_id on the wire); cyclic
+   state lives in the slot and is keyed by (client_dev, data_id). */
 #define READ_RESPONSE_MAX         ((uint16_t)(FBSEC_AEAD_RAND_SIZE \
                                               + FBSEC_AEAD_MAX_PROTECTED \
-                                              + FBSEC_AEAD_TAG_SIZE \
-                                              + SIGNED_TRAILER_LEN))
+                                              + FBSEC_AEAD_TAG_SIZE))
 
 /* ---- Internal types --------------------------------------------------- */
 
@@ -442,30 +433,6 @@ static fbsec_sod_status_t arm_read_response(
   slot->armed_at     = fbsec_sod_port_get_time_ms();
   slot->prepared_len = (uint16_t)(cipher_off + plain_len + FBSEC_AEAD_TAG_SIZE);
 
-#if FBSEC_ASYM_SIGNED_FBSEC
-  /* Signed-FBsec (spec 11.6.5): the server proves its runtime identity by
-     appending an Ed25519 signature over the domain-separated transcript
-     that binds both randoms and the addressing context. The AEAD tag is
-     what a client verifies FIRST; this signature is the second factor. */
-  if (FBSEC_AEAD_KEYID_SIGNED(key_id)) {
-    uint8_t  ctx[FBSEC_ASYM_FBSEC_CTX_LEN];
-    uint8_t  transcript[FBSEC_ASYM_TRANSCRIPT_OVERHEAD + FBSEC_ASYM_FBSEC_CTX_LEN];
-    uint16_t clen = fbsec_asym_fbsec_context(entry->data_id,
-                                             fbsec_sod_port_get_device_id(), client_dev,
-                                             client_random, server_random,
-                                             ctx, (uint16_t)sizeof ctx);
-    uint16_t tlen = fbsec_asym_transcript(FBSEC_ASYM_RD_SIGNED_FBSEC_S2C, ctx, clen,
-                                          transcript, (uint16_t)sizeof transcript);
-    if ((clen == 0u) || (tlen == 0u) ||
-        !fbsec_sod_port_sign(FBSEC_ASYM_RD_SIGNED_FBSEC_S2C, transcript, tlen,
-                             &slot->prepared[slot->prepared_len])) {
-      *out_abort = FBSEC_ABORT_INTERNAL;
-      return FBSEC_SOD_ABORT;
-    }
-    slot->prepared_len = (uint16_t)(slot->prepared_len + FBSEC_ASYM_SIG_SIZE);
-  }
-#endif
-
 #if FBSEC_FEATURE_CYCLIC
   /* Cyclic-capable single SRD: keep the prepared response byte-
      identical to plain single-shot (no session_id on the wire) but
@@ -616,26 +583,14 @@ static fbsec_sod_status_t verify_and_apply_write(
     return FBSEC_SOD_ABORT;
   }
   /* Pass-2 wire shape:
-       keyid[1] || client_random[R] || ciphertext[N] || tag[T]
-       (|| SIG[64] in signed-FBsec mode, flagged by keyid bit 5). */
+       keyid[1] || client_random[R] || ciphertext[N] || tag[T]. */
   uint16_t expected = (uint16_t)(1u + FBSEC_AEAD_RAND_SIZE
                                  + entry->data_len + FBSEC_AEAD_TAG_SIZE);
-#if FBSEC_ASYM_SIGNED_FBSEC
-  bool     signed_req    = FBSEC_AEAD_KEYID_SIGNED(req[0]);
-  uint16_t expected_full = signed_req
-                         ? (uint16_t)(expected + FBSEC_ASYM_SIG_SIZE) : expected;
-  if (req_len != expected_full) {
-    slot->in_use = false;
-    *out_abort = length_abort(req_len, expected_full);
-    return FBSEC_SOD_ABORT;
-  }
-#else
   if (req_len != expected) {
     slot->in_use = false;
     *out_abort = length_abort(req_len, expected);
     return FBSEC_SOD_ABORT;
   }
-#endif
 
   /* Pull the keyid from the wire. Reserved bits (5..4) must be 0; bit
      6 (cyclic-arm) is OPTIONAL on Pass 2; when set, the slot stays
@@ -690,31 +645,6 @@ static fbsec_sod_status_t verify_and_apply_write(
     *out_abort = FBSEC_ABORT_TAG_VERIFY;
     return FBSEC_SOD_ABORT;
   }
-
-#if FBSEC_ASYM_SIGNED_FBSEC
-  /* Signed-FBsec (spec 11.6.5): the AEAD tag verified above; now verify
-     the client's Ed25519 signature over the transcript before committing.
-     Tag-first, signature-second preserves the DoS posture. */
-  if (signed_req) {
-    const uint8_t *sig = &req[expected];   /* trailer after keyid|R|cipher|tag */
-    fbsec_pubkey_t pk;
-    uint8_t  ctx[FBSEC_ASYM_FBSEC_CTX_LEN];
-    uint8_t  transcript[FBSEC_ASYM_TRANSCRIPT_OVERHEAD + FBSEC_ASYM_FBSEC_CTX_LEN];
-    uint16_t clen = fbsec_asym_fbsec_context(entry->data_id,
-                                             fbsec_sod_port_get_device_id(), slot->client_dev,
-                                             client_random, slot->server_random,
-                                             ctx, (uint16_t)sizeof ctx);
-    uint16_t tlen = fbsec_asym_transcript(FBSEC_ASYM_RD_SIGNED_FBSEC_C2S, ctx, clen,
-                                          transcript, (uint16_t)sizeof transcript);
-    if (!fbsec_sod_port_peer_pubkey(slot->client_dev, pk.pub) ||
-        (clen == 0u) || (tlen == 0u) ||
-        !fbsec_asym_verify(&pk, transcript, tlen, sig)) {
-      slot->in_use = false;
-      *out_abort = FBSEC_ABORT_SIG_VERIFY;
-      return FBSEC_SOD_ABORT;
-    }
-  }
-#endif
 
   fbsec_abort_t hook_rc = fbsec_sod_port_write_after(entry->data_id,
                                               plaintext, entry->data_len);

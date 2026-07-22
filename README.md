@@ -30,6 +30,8 @@ redistributables. Everything required is in-tree:
 
 - The mbedtls subset (AES, GCM, SHA-256, plus glue) ships under
   `third_party/mbedtls/`.
+- The Monocypher Ed25519 subset (for the optional RPK layer) ships under
+  `third_party/monocypher/`.
 - All produced `.exe` files statically link the MSVC C runtime
   (`/MT` Release), so the binaries you build copy to any Windows 10+
   machine and run without the Visual C++ Redistributable installed.
@@ -131,13 +133,44 @@ variants with a uint16 device_id will set it to `2`; peers compiled
 with mismatched values fail-closed at AEAD verify on the first
 secure verb.
 
+## RPK identity layer (Ed25519)
+
+On top of the symmetric AEAD core, SOFA can build an optional raw-public-key
+(RPK) identity layer that uses Ed25519 signatures. It is controlled by a
+single CMake knob and now defaults on:
+
+```
+cmake -S . -B build -DFBSEC_FEATURE_ASYM=ON
+```
+
+Build with `-DFBSEC_FEATURE_ASYM=OFF` for a minimal, AEAD-only device that
+carries no signature code or public-key state. The Ed25519 primitives come
+from a vendored subset of Monocypher under `third_party/monocypher/`; see
+[`NOTICE`](NOTICE) for the attribution.
+
+The RPK layer adds the following CiA 720 object-dictionary entries:
+
+- `C020h`: ownership control (voucher claim, owner epoch, LDevID generate and export).
+- `C021h`: public keys the device holds for verification.
+- `C022h`: public-key types and lengths for the keys in `C021h`.
+- `C028h`: authenticated identification, signed (the RPK flavor of the AEAD identity read).
+- `C02Fh`: provisioning key install, signed.
+- `C042h`: generic secure access, RPK (the RPK sibling of the AEAD generic access).
+- `C049h`: secure function command, RPK.
+
+The protection model is replacement, not addition: a secure entry is
+guarded by the AEAD tag or by an Ed25519 signature, never by both. On a
+signed entry the signature replaces the tag, and freshness comes from the
+two-pass challenge, so the signature always covers randomness the verifier
+contributed.
+
 ## Repository layout
 
 ```
 SOFA/
 ├── CMakeLists.txt
 ├── LICENSE                         # Apache 2.0
-├── NOTICE                          # third-party attributions (mbedtls)
+├── NOTICE                          # third-party attributions (mbedtls, monocypher)
 ├── SECURITY.md                     # security status + vuln reporting
 ├── CONTRIBUTING.md                 # maintenance model + how to send feedback
 ├── README.md                       # this file
@@ -161,10 +194,12 @@ SOFA/
 │       ├── server/                 # FD server main
 │       └── common/                 # FD-specific: addressing, USDO carrier, framing
 └── third_party/
-    └── mbedtls/                    # vendored mbedtls subset (AES/GCM/SHA-256)
-        ├── include/
-        ├── library/
-        └── LICENSE                 # Apache 2.0 (Arm/mbedtls)
+    ├── mbedtls/                    # vendored mbedtls subset (AES/GCM/SHA-256)
+    │   ├── include/
+    │   ├── library/
+    │   └── LICENSE                 # Apache 2.0 (Arm/mbedtls)
+    └── monocypher/                 # vendored Monocypher Ed25519 subset (RPK layer)
+        └── LICENSE                 # BSD-2-Clause OR CC-0 (Monocypher)
 ```
 
 ## Documentation
