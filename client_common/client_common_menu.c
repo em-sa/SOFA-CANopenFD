@@ -783,6 +783,151 @@ static void scan_security_params(const fbsec_secure_transport_t *transport,
   fbsec_client_trace_set_quiet(prev_quiet);
 }
 
+/* ---- Lifecycle / commissioning submenu ----------------------------- */
+
+/* One cold (unsecured, body-less) read of index:sub. Returns bytes read,
+   0 on any transport error or abort. Trace is silenced by the caller. */
+static uint32_t lifecycle_cold_read(const fbsec_secure_transport_t *transport,
+                                    uint16_t target, uint16_t index, uint8_t sub,
+                                    uint32_t timeout_ms,
+                                    uint8_t *buf, uint32_t buf_size) {
+  uint32_t data_id = ((uint32_t)index << 16) | ((uint32_t)sub << 8);
+  uint32_t len  = 0u;
+  fbsec_abort_t abrt = FBSEC_ABORT_NONE;
+  fbsec_secure_status_t rc = transport->read(transport->ctx, target, data_id,
+                                             NULL, 0u, buf, buf_size,
+                                             timeout_ms, &len, &abrt);
+  return (rc == FBSEC_SECP_OK) ? len : 0u;
+}
+
+/* Snapshot of the server's live commissioning state, read cold. */
+typedef struct {
+  bool    ok;             /* the C001h:01h read succeeded              */
+  uint8_t commissioning;  /* FBSEC_STAT_UNCOMMISSIONED / _COMMISSIONED */
+  uint8_t keys;           /* FBSEC_STAT_KEY_* bitmap                   */
+  uint8_t handover;       /* C000h:06h FBSEC_DESC_HANDOVER_* bitmap    */
+} lifecycle_state_t;
+
+/* Read C001h:01h/:02h and C000h:06h with tracing silenced. */
+static lifecycle_state_t lifecycle_read_state(
+    const fbsec_secure_transport_t *transport,
+    uint16_t target, uint32_t timeout_ms) {
+  lifecycle_state_t st = { false, FBSEC_STAT_UNCOMMISSIONED, 0u, 0u };
+  uint8_t  buf[8];
+  bool     prev_quiet = fbsec_client_trace_get_quiet();
+
+  fbsec_client_trace_set_quiet(true);
+  if (lifecycle_cold_read(transport, target, 0xC001u, 0x01u, timeout_ms,
+                          buf, (uint32_t)sizeof buf) >= 1u) {
+    st.ok = true;
+    st.commissioning = buf[0];
+  }
+  if (lifecycle_cold_read(transport, target, 0xC001u, 0x02u, timeout_ms,
+                          buf, (uint32_t)sizeof buf) >= 1u) {
+    st.keys = buf[0];
+  }
+  if (lifecycle_cold_read(transport, target, 0xC000u, 0x06u, timeout_ms,
+                          buf, (uint32_t)sizeof buf) >= 1u) {
+    st.handover = buf[0];
+  }
+  fbsec_client_trace_set_quiet(prev_quiet);
+  return st;
+}
+
+/* Print the state banner and the transitions valid in the current state,
+   then return the number of numbered options offered (0 if none). */
+static unsigned lifecycle_print(const lifecycle_state_t *st) {
+  unsigned opt = 0u;
+
+  printf("=== lifecycle / commissioning ===\n");
+  if (!st->ok) {
+    printf("  could not read C001h status from the target\n");
+    return 0u;
+  }
+
+  printf("  stage:  %s\n",
+         (st->commissioning == FBSEC_STAT_COMMISSIONED) ? "Owned / Operational"
+                                                        : "Uncommissioned");
+  printf("  keys:   %s%s%s%s\n",
+         (st->keys == 0u) ? "none" : "",
+         ((st->keys & FBSEC_STAT_KEY_PROVISIONING) != 0u) ? " Provisioning" : "",
+         ((st->keys & FBSEC_STAT_KEY_INTEGRATOR)   != 0u) ? " Integrator"   : "",
+         ((st->keys & FBSEC_STAT_KEY_OPERATOR)     != 0u) ? " Operator"     : "");
+  {
+    bool voucher = (st->handover & FBSEC_DESC_HANDOVER_VOUCHER) != 0u;
+    bool token   = (st->handover & FBSEC_DESC_HANDOVER_TOKEN)   != 0u;
+    printf("  gates:  %s%s%s\n",
+           (!voucher && !token) ? "none advertised" : "",
+           voucher ? "voucher " : "",
+           token   ? "token"    : "");
+  }
+  printf("  ------------------------------\n");
+
+  if (st->commissioning != FBSEC_STAT_COMMISSIONED) {
+    if ((st->handover & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) {
+      printf("  %u) Claim ownership by voucher, then install the "
+             "Provisioning key\n", ++opt);
+    }
+    if ((st->handover & FBSEC_DESC_HANDOVER_TOKEN) != 0u) {
+      printf("  %u) Present the Device Claim Token and install the "
+             "Provisioning key\n", ++opt);
+    }
+    if (opt == 0u) {
+      if ((st->handover & FBSEC_DESC_HANDOVER_TOFU) != 0u) {
+        printf("  claim-on-first-use (TOFU): the first secure session takes\n"
+               "  ownership; there is no explicit gate step to run here\n");
+      } else {
+        printf("  (device advertises no ownership gate)\n");
+      }
+    }
+  } else {
+    printf("  %u) Install the next key in the ladder "
+           "(Integrator, Operator)\n", ++opt);
+    printf("  %u) Decommission / factory restore\n", ++opt);
+  }
+  printf("  Q) Back\n");
+  return opt;
+}
+
+/* State-driven lifecycle submenu. Reads the live server state on entry and
+   after each action, and offers only the transitions valid now. Phase 1
+   wires the state read and the option set; the transition actions land with
+   the provisioning path. */
+static void lifecycle_submenu(const fbsec_secure_transport_t *transport,
+                              uint16_t target, uint32_t timeout_ms) {
+  char line[32];
+  for (;;) {
+    lifecycle_state_t st = lifecycle_read_state(transport, target, timeout_ms);
+    unsigned opts = lifecycle_print(&st);
+
+    printf("Lifecycle choice: ");
+    fflush(stdout);
+    if (read_line(line, sizeof line) == 0) {
+      printf("\n");
+      return;
+    }
+    if (line[0] == '\0') {
+      continue;
+    }
+    if (line[0] == 'q' || line[0] == 'Q') {
+      return;
+    }
+
+    {
+      char    *end = NULL;
+      unsigned long sel = strtoul(line, &end, 10);
+      if ((end == line) || (*end != '\0') || (sel < 1ul) || (sel > opts)) {
+        printf("  ?? not an option here: %s\n", line);
+        continue;
+      }
+    }
+    /* A valid transition was selected. The provisioning and decommission
+       actions arrive with the later lifecycle phases; until then the
+       submenu shows the state and the path without performing the step. */
+    printf("  this transition is not wired in this build yet\n");
+  }
+}
+
 /* ---- REPL ---------------------------------------------------------- */
 
 int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
@@ -855,6 +1000,7 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
            "Signed command");
 #endif
     printf("  --------------------------\n");
+    printf("  L) %-24s  commissioning lifecycle submenu\n", "Lifecycle");
     printf("  Q) Quit\n");
     printf("Choice: ");
     fflush(stdout);
@@ -965,6 +1111,8 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
         }
       }
 #endif
+    } else if (c == 'l' || c == 'L') {
+      lifecycle_submenu(transport, target, cfg->timeout_ms);
     } else {
       printf("?? unrecognised choice: %s\n", line);
     }

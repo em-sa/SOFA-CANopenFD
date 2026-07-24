@@ -55,6 +55,7 @@ typedef struct fbsec_server_cfg_t {
   fbsec_server_color_pref_t color_pref;
   const char               *key_file_path; /**< NULL if --key-file not given        */
   const char               *od_file_path;  /**< NULL if --od-file not given         */
+  bool                      demo_keys;     /**< --demo-keys: fill unset slots        */
 } fbsec_server_cfg_t;
 
 /**

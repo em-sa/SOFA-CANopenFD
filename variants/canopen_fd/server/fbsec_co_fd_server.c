@@ -173,7 +173,8 @@ int main(int argc, char **argv) {
   }
 
   if (fbsec_server_od_init(g_cfg.common.my_dev, g_cfg.common.key_file_path,
-                           g_cfg.common.od_file_path) != 0) {
+                           g_cfg.common.od_file_path,
+                           g_cfg.common.demo_keys) != 0) {
     fbsec_co_fd_carrier_close(&g_carrier);
     fbsec_co_fd_carrier_global_shutdown();
     return 1;
@@ -321,8 +322,11 @@ static void print_usage(FILE *f) {
     "  --quiet             suppress per-request log on stdout\n"
     "  --color             force ANSI colour on (default: auto-on if TTY)\n"
     "  --no-color          force ANSI colour off (e.g. when piping to a file)\n"
-    "  --key-file FILE     replace the demo keys with entries from FILE\n"
+    "  --key-file FILE     load session keys from FILE and boot Operational\n"
     "                      (one row: '<keyid> <label> <hex> [<u32-id>]')\n"
+    "  --demo-keys         fill any unset key slots with the built-in demo\n"
+    "                      keys and boot Operational; without keys the device\n"
+    "                      boots Uncommissioned (new-from-manufacturer)\n"
     "  --od-file FILE      load constant unsecured OD entries from FILE\n"
     "                      (rows '<index> <sub> <len> <data...>'; supplies\n"
     "                      the 1018h identity that C018h serves)\n"

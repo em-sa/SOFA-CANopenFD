@@ -18,6 +18,7 @@
 #include "server_common_keys.h"
 #include "server_common_const_od.h"
 #include "server_common_security.h"
+#include "server_common_lifecycle.h"
 
 #include "fbsec_aead.h"
 #include "fbsec_secure_od.h"
@@ -86,7 +87,8 @@ static bool try_serve_descriptor(uint16_t src_dev, uint32_t data_id,
     if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR)) {
       keys |= FBSEC_STAT_KEY_OPERATOR;
     }
-    fbsec_descriptor_build_status(FBSEC_STAT_COMMISSIONED, keys, &stat);
+    fbsec_descriptor_build_status(fbsec_server_lifecycle_commissioning(),
+                                  keys, &stat);
     highest = stat.highest_sub;
     sub_exists = ((data_id & 0xFFu) == 0u) && (sub <= highest);
     if (sub_exists && (payload_len == 0u)) {

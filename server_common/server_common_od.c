@@ -16,6 +16,7 @@
 #include "server_common_hooks.h"
 #include "server_common_keys.h"
 #include "server_common_const_od.h"
+#include "server_common_lifecycle.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -29,10 +30,12 @@
 #endif
 
 int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path,
-                         const char *od_file_path) {
+                         const char *od_file_path, bool install_demo_keys) {
   bool identity_ok;
+  bool have_session_keys;
 
   fbsec_sod_init();
+  fbsec_server_lifecycle_init();      /* Factory until keys settle below */
   fbsec_server_hooks_set_my_dev(my_dev);
 
 #if FBSEC_FEATURE_ASYM
@@ -102,13 +105,26 @@ int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path,
     return -1;
   }
 
-  /* Load --key-file (if any) first; demo keys fill any unset slots. */
+  /* Load --key-file (if any) first; demo keys fill any unset slots only
+     when explicitly requested (--demo-keys). Neither path present means
+     the device boots with no session keys, i.e. Uncommissioned. */
   if (key_file_path != NULL) {
     if (fbsec_server_load_key_file(key_file_path) != 0) {
       return -1;
     }
   }
-  fbsec_server_install_demo_keys_if_unset();
+  if (install_demo_keys) {
+    fbsec_server_install_demo_keys_if_unset();
+  }
+
+  /* Drive the commissioning stage from whether a session key is present.
+     A key ladder or a persisted owner would refine this in later phases;
+     for now the honest split is keys => Operational, none => Uncommissioned. */
+  have_session_keys = fbsec_sod_has_key(FBSEC_DEMO_KEYID_PROVISIONING)
+                   || fbsec_sod_has_key(FBSEC_DEMO_KEYID_INTEGRATOR)
+                   || fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR);
+  fbsec_server_lifecycle_set(have_session_keys ? FBSEC_STAGE_OPERATIONAL
+                                               : FBSEC_STAGE_UNCOMMISSIONED);
   return 0;
 }
 

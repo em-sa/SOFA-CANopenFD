@@ -21,6 +21,7 @@
  *   --color             cfg->color_pref = ALWAYS
  *   --no-color          cfg->color_pref = NEVER
  *   --key-file PATH     cfg->key_file_path = PATH
+ *   --demo-keys         cfg->demo_keys = true (fill unset slots with demo keys)
  *   --od-file PATH      cfg->od_file_path = PATH
  *   --help              prints the variant's full usage via the
  *                       caller-supplied @p usage_fn and signals exit

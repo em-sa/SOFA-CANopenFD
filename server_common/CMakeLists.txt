@@ -22,6 +22,8 @@ set(FBSEC_SERVER_COMMON_SRC
   server_common_hooks.h
   server_common_od.c
   server_common_od.h
+  server_common_lifecycle.c
+  server_common_lifecycle.h
   server_common_const_od.c
   server_common_const_od.h
   server_common_security.c
