@@ -190,6 +190,14 @@ static int find_index(uint32_t data_id) {
 bool fbsec_sod_register_entry(const fbsec_sod_entry_t *entry) {
   if (entry == NULL) return false;
   if (entry->data_len > FBSEC_AEAD_MAX_PROTECTED) return false;
+#if !FBSEC_AEAD_ENCRYPTION
+  /* An auth-only build cannot keep a confidential entry confidential: the
+     payload rides the wire in clear. Refuse the registration so the
+     misconfiguration fails loudly at startup instead of exposing the data. */
+  if ((entry->access_flags & FBSEC_SOD_ACCESS_CONFIDENTIAL) != 0u) {
+    return false;
+  }
+#endif
 
   int idx = find_index(entry->data_id);
   if (idx >= 0) {
@@ -205,6 +213,22 @@ bool fbsec_sod_register_entry(const fbsec_sod_entry_t *entry) {
 const fbsec_sod_entry_t *fbsec_sod_find_entry(uint32_t data_id) {
   int idx = find_index(data_id);
   return (idx >= 0) ? &g_registry[idx] : NULL;
+}
+
+void fbsec_sod_test_expire_arming(void) {
+  /* now - (idle timeout + 1): age = that constant regardless of the clock, so
+     both slot_is_fresh (5 s) and session_is_fresh (60 s) report stale. */
+  uint16_t stale = (uint16_t)(fbsec_sod_port_get_time_ms()
+                   - (uint16_t)(FBSEC_SOD_SESSION_IDLE_TIMEOUT_MS + 1u));
+  uint8_t  i;
+  for (i = 0u; i < FBSEC_SOD_MAX_ENTRIES; ++i) {
+#if FBSEC_FEATURE_READ
+    g_read_slot[i].armed_at = stale;
+#endif
+#if FBSEC_FEATURE_WRITE
+    g_write_slot[i].armed_at = stale;
+#endif
+  }
 }
 
 /* ---- Key store ------------------------------------------------------- */
@@ -281,6 +305,31 @@ static bool session_is_fresh(uint16_t armed_at) {
                            (uint16_t)FBSEC_SOD_SESSION_IDLE_TIMEOUT_MS);
 }
 #endif
+
+/* ---- Single-client arming guard -------------------------------------- */
+
+/* SOFA is single-client (single-manager) access: the server holds one armed
+   read slot and one armed write slot per entry, not one per client. A second
+   client that arms an entry still held by a different client would overwrite
+   that client's in-flight arming and silently corrupt its transfer. Refuse
+   instead, with FBSEC_ABORT_DEVICE_STATE (62h); the CANopen FD carrier maps
+   that to the USDO single-client-access abort. A stale (timed-out) slot, or
+   the same client re-arming its own slot, is allowed to proceed. */
+static bool slot_held_by_other(bool in_use, bool cyclic,
+                               uint16_t owner_dev, uint16_t armed_at,
+                               uint16_t req_dev) {
+  if (!in_use || (owner_dev == req_dev)) {
+    return false;
+  }
+#if FBSEC_FEATURE_CYCLIC
+  if (cyclic) {
+    return session_is_fresh(armed_at);
+  }
+#else
+  (void)cyclic;
+#endif
+  return slot_is_fresh(armed_at);
+}
 
 #if FBSEC_FEATURE_CYCLIC
 /* ---- Nonce assembly for cyclic-mode AEAD ------------------------- */
@@ -376,6 +425,14 @@ static fbsec_sod_status_t arm_read_response(
   }
 
   read_state_t *slot = &g_read_slot[slot_idx];
+
+  /* Single-client guard: refuse a concurrent client rather than
+     overwriting another client's fresh arming. */
+  if (slot_held_by_other(slot->in_use, slot->cyclic, slot->client_dev,
+                         slot->armed_at, client_dev)) {
+    *out_abort = FBSEC_ABORT_DEVICE_STATE;
+    return FBSEC_SOD_ABORT;
+  }
 
   /* Single-shot data path runs whether or not bit-6 is set. When
      bit-6 IS set, we additionally allocate a session_id (appended to
@@ -538,6 +595,15 @@ static fbsec_sod_status_t arm_write_challenge(
   }
 
   write_state_t *slot = &g_write_slot[slot_idx];
+
+  /* Single-client guard: refuse a concurrent client, checked before the
+     slot is cleared so the previous owner's identity is still readable. */
+  if (slot_held_by_other(slot->in_use, slot->cyclic, slot->client_dev,
+                         slot->armed_at, client_dev)) {
+    *out_abort = FBSEC_ABORT_DEVICE_STATE;
+    return FBSEC_SOD_ABORT;
+  }
+
   memset(slot, 0, sizeof *slot);
   slot->in_use     = true;
 #if FBSEC_FEATURE_CYCLIC

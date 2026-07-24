@@ -25,6 +25,7 @@
 
 #include "fbsec_secure_proto.h"
 #include "fbsec_descriptor.h"
+#include "client_common_cfg.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +48,33 @@ extern "C" {
 int fbsec_client_read_caps(const fbsec_secure_transport_t *transport,
                            uint16_t target, uint32_t timeout_ms,
                            fbsec_caps_t *out);
+
+/**
+ * @brief Does a descriptor meet the client's minimum security floor?
+ *
+ * @param caps   decoded C000h descriptor.
+ * @param floor  the client's local minimum (ANY / AEAD / SIGNED).
+ * @retval true  floor is ANY, or the device advertises the required mechanism.
+ * @retval false the device advertises less than the floor (or @p caps is NULL).
+ */
+bool fbsec_client_caps_meets_min(const fbsec_caps_t *caps,
+                                 fbsec_client_min_sec_t floor);
+
+/**
+ * @brief Enforce the client's minimum security floor before any secure work.
+ *
+ * Reads the C000h descriptor and compares it against @p floor. The descriptor
+ * is an optimization only: it may satisfy or fail the floor, but a client that
+ * requires a mechanism the device does not advertise refuses rather than
+ * falling back to a weaker one. A descriptor that cannot be read is treated as
+ * failing closed.
+ *
+ * @retval 0  floor is ANY, or the device meets it.
+ * @retval 1  floor not met (a refusal is printed to stderr); do not proceed.
+ */
+int fbsec_client_enforce_min_security(const fbsec_secure_transport_t *transport,
+                                      uint16_t target, uint32_t timeout_ms,
+                                      fbsec_client_min_sec_t floor, bool quiet);
 
 #ifdef __cplusplus
 }

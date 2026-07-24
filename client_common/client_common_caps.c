@@ -14,6 +14,9 @@
 
 #include "client_common_caps.h"
 
+#include <stdio.h>
+#include <string.h>
+
 /* Read one C000h sub-index and decode it into @p caps. */
 static int read_one_sub(const fbsec_secure_transport_t *transport,
                         uint16_t target, uint8_t sub,
@@ -63,6 +66,63 @@ int fbsec_client_read_caps(const fbsec_secure_transport_t *transport,
     if (rc != 0) {
       return rc;
     }
+  }
+  return 0;
+}
+
+bool fbsec_client_caps_meets_min(const fbsec_caps_t *caps,
+                                 fbsec_client_min_sec_t floor) {
+  if (floor == FBSEC_CLIENT_SEC_ANY) {
+    return true;
+  }
+  if (caps == NULL) {
+    return false;
+  }
+  /* Mechanisms live in the sub 01h type word; an absent sub 01h leaves the
+     field zero, which fails any non-ANY floor - the intended fail-closed. */
+  uint8_t mech = FBSEC_TYPEWORD_MECH(caps->type_word);
+  if (floor == FBSEC_CLIENT_SEC_AEAD) {
+    return (mech & FBSEC_MECH_AEAD) != 0u;
+  }
+  if (floor == FBSEC_CLIENT_SEC_SIGNED) {
+    return (mech & FBSEC_MECH_RPK) != 0u;
+  }
+  if (floor == FBSEC_CLIENT_SEC_X509) {
+    return (mech & FBSEC_MECH_X509) != 0u;
+  }
+  return false;
+}
+
+int fbsec_client_enforce_min_security(const fbsec_secure_transport_t *transport,
+                                      uint16_t target, uint32_t timeout_ms,
+                                      fbsec_client_min_sec_t floor, bool quiet) {
+  fbsec_caps_t caps;
+  int          rc;
+  const char  *want = (floor == FBSEC_CLIENT_SEC_SIGNED) ? "signed (RPK)"
+                    : (floor == FBSEC_CLIENT_SEC_X509)   ? "X.509"
+                    : "AEAD";
+
+  if (floor == FBSEC_CLIENT_SEC_ANY) {
+    return 0;
+  }
+
+  memset(&caps, 0, sizeof caps);
+  rc = fbsec_client_read_caps(transport, target, timeout_ms, &caps);
+  if (rc != 0) {
+    fprintf(stderr,
+            "policy: cannot read the capability descriptor (rc=%d); "
+            "refusing to proceed rather than assume a security level.\n", rc);
+    return 1;
+  }
+  if (!fbsec_client_caps_meets_min(&caps, floor)) {
+    fprintf(stderr,
+            "policy: device 0x%02X does not advertise the required %s mechanism; "
+            "refusing rather than downgrading (the cold descriptor may be spoofed).\n",
+            (unsigned)target, want);
+    return 1;
+  }
+  if (!quiet) {
+    printf("policy: minimum security satisfied (device advertises %s).\n", want);
   }
   return 0;
 }

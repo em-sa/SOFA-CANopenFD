@@ -52,6 +52,12 @@ extern "C" {
 #define FBSEC_SOD_ACCESS_NONE         0x00u
 #define FBSEC_SOD_ACCESS_SECURE_RO    0x01u
 #define FBSEC_SOD_ACCESS_SECURE_WO    0x02u
+/* Marks an entry whose read data is confidential, not merely integrity-
+   protected. Authenticate-only builds (FBSEC_AEAD_ENCRYPTION == 0) carry the
+   payload in clear, so a confidential entry cannot be honored there;
+   fbsec_sod_register_entry refuses such an entry at build/startup rather than
+   silently exposing it. Combine with FBSEC_SOD_ACCESS_SECURE_RO. */
+#define FBSEC_SOD_ACCESS_CONFIDENTIAL 0x04u
 
 /* ---- Key role sentinel ----------------------------------------------- */
 
@@ -114,6 +120,17 @@ bool fbsec_sod_register_entry(const fbsec_sod_entry_t *entry);
  * @return Pointer into the registry, or NULL.
  */
 const fbsec_sod_entry_t *fbsec_sod_find_entry(uint32_t data_id);
+
+/**
+ * @brief Test support: age every armed slot past its freshness window.
+ *
+ * Not used in production. Moves the arming timestamp of each read and write
+ * slot far enough back that both the single-shot and the cyclic freshness
+ * checks treat it as stale, so tests can exercise the stale-slot paths without
+ * waiting out the real timeout. Only timestamps change; no key, entry or
+ * armed-payload state is touched.
+ */
+void fbsec_sod_test_expire_arming(void);
 
 /**
  * @brief Install a session key in slot @p key_id (1..FBSEC_SOD_KEY_SLOTS).

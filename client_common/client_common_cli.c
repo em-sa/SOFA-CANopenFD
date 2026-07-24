@@ -178,6 +178,10 @@ fbsec_client_cli_result_t fbsec_client_cli_try_common_flag(
   if (strcmp(a, "--no-color") == 0)       { cfg->color_pref = FBSEC_CLIENT_COLOR_NEVER;  *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
   if (strcmp(a, "--encrypt") == 0)        { fbsec_client_keys_set_use_encryption(true);  *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
   if (strcmp(a, "--no-encrypt") == 0)     { fbsec_client_keys_set_use_encryption(false); *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
+  if (strcmp(a, "--require-aead") == 0)   { cfg->min_security = FBSEC_CLIENT_SEC_AEAD;   *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
+  if (strcmp(a, "--require-signed") == 0) { cfg->min_security = FBSEC_CLIENT_SEC_SIGNED; *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
+  if (strcmp(a, "--require-x509") == 0)   { cfg->min_security = FBSEC_CLIENT_SEC_X509;   *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
+  if (strcmp(a, "--check-policy") == 0)   { cfg->check_policy = true;                    *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
   if (strcmp(a, "--stop-on-fail") == 0)   { cfg->stop_on_fail = true; *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
   if (strcmp(a, "--menu") == 0)           { cfg->menu_mode = true;    *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }
   if (strcmp(a, "--hex") == 0)            { cfg->hex = true;          *iref = i + 1; return FBSEC_CLIENT_CLI_HANDLED; }

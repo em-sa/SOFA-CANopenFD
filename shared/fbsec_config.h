@@ -61,8 +61,11 @@
  *                               AAD inclusion)
  *
  * The Ascon family does not define an auth-only mode; if Ascon is selected,
- * encryption MUST be 1. */
-#define FBSEC_AEAD_ENCRYPTION         1
+ * encryption MUST be 1. Override at configure time with
+ * -DFBSEC_AEAD_ENCRYPTION=0 for an authenticate-only build. */
+#ifndef FBSEC_AEAD_ENCRYPTION
+#  define FBSEC_AEAD_ENCRYPTION       1
+#endif
 
 /* ---- AAD peer-identifier width --------------------------------------- */
 
@@ -92,8 +95,17 @@
  *
  *     nonce[12] = client_random[0..11] XOR server_random[0..11]
  *
- * so nonce uniqueness is preserved as long as **at least one** side has a
- * sound RNG; the design does not collapse on a single weak peer.
+ * so both peers contribute to every nonce. Note carefully what this does and
+ * does not buy: the peer's random gives transcript freshness against replay,
+ * but it does NOT give the encrypting side
+ * nonce-collision resistance, because a hostile peer can hold its own
+ * contribution constant. Under the threat model one peer is the attacker. The
+ * encrypting side (the server on reads, the client on writes) SHALL therefore
+ * guarantee its OWN random never repeats under a given key: a repeated
+ * server_random on a read, against a fixed client_random, reuses a (key, nonce)
+ * pair, which in GCM is catastrophic. The peer random adds freshness only and
+ * cannot rescue a weak encryptor RNG. fbsec_*_port_random must be a CSPRNG whose
+ * output does not repeat within a key's lifetime.
  *
  * Both randoms are also bound into the AAD tail of READ_RESPONSE /
  * WRITE_REQUEST (see fbsec_aead.h), so an in-flight tamper of either

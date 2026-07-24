@@ -60,6 +60,12 @@ set(FBSEC_FEATURE_READ   1 CACHE STRING "Include read path  (0/1)")
 set(FBSEC_FEATURE_WRITE  1 CACHE STRING "Include write path (0/1)")
 set(FBSEC_FEATURE_CYCLIC 1 CACHE STRING "Include cyclic mode (0/1)")
 
+# AEAD mode: 1 = encrypt-and-authenticate (data is ciphertext on the wire),
+# 0 = authenticate-only (data is plaintext, integrity-only). Configure an
+# auth-only build with -DFBSEC_AEAD_ENCRYPTION=0; among other effects that
+# activates the guard refusing confidential SECURE_RO entries.
+set(FBSEC_AEAD_ENCRYPTION 1 CACHE STRING "AEAD mode: 1 encrypt-and-authenticate, 0 authenticate-only")
+
 # Optional Ed25519 asymmetric identity layer (capability/status
 # descriptors, IDevID/LDevID, RPK secure objects, handover). Default ON: a
 # stock build ships the RPK mechanism and advertises it in C000h. Set to 0
@@ -100,6 +106,7 @@ add_compile_definitions(
   FBSEC_AEAD_DEV_ID_SIZE=${FBSEC_AEAD_DEV_ID_SIZE}
   FBSEC_FEATURE_ASYM=${FBSEC_FEATURE_ASYM}
   FBSEC_HANDOVER_AUTHORIZED=${FBSEC_HANDOVER_AUTHORIZED}
+  FBSEC_AEAD_ENCRYPTION=${FBSEC_AEAD_ENCRYPTION}
 )
 
 ## ---------------------------------------------------------------------------

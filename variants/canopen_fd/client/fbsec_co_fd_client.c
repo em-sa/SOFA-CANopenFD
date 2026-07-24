@@ -405,6 +405,36 @@ int main(int argc, char **argv) {
      the HKDF derivation above are left alone. */
   fbsec_client_keys_load_demo_all();
 
+  /* Enforce the client-held minimum security floor (default ANY is a no-op)
+     before any secure work: the cold C000h descriptor is spoofable, so a
+     client that requires a mechanism the device does not advertise refuses
+     rather than falling back to a weaker tunnel. */
+  {
+    uint16_t gate_target = (g_cfg.common.menu_mode || g_cfg.common.check_policy)
+                             ? (uint16_t)g_cfg.target_node
+                             : (uint16_t)target_arg;
+    int gate = fbsec_client_enforce_min_security(&g_transport, gate_target,
+                                                 g_cfg.common.timeout_ms,
+                                                 g_cfg.common.min_security,
+                                                 g_cfg.common.quiet);
+    if (gate != 0) {
+      fbsec_co_fd_carrier_close(&g_carrier);
+      fbsec_co_fd_carrier_global_shutdown();
+      return 2;
+    }
+    /* --check-policy: the floor is satisfied; report and exit without
+       running any secure operation. */
+    if (g_cfg.common.check_policy) {
+      if (!g_cfg.common.quiet) {
+        printf("policy: check passed for device 0x%02X\n",
+               (unsigned)gate_target);
+      }
+      fbsec_co_fd_carrier_close(&g_carrier);
+      fbsec_co_fd_carrier_global_shutdown();
+      return 0;
+    }
+  }
+
   int exit_code = 1;
   if (g_cfg.common.menu_mode) {
     char bus_label[80];
@@ -477,7 +507,8 @@ static int parse_args(int argc, char **argv,
     return 1;
   }
 
-  /* First pass: detect --help / --menu. */
+  /* First pass: detect --help / --menu / --check-policy. The latter two both
+     run no positional verb, so they must be known before positional parsing. */
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--help") == 0) {
       print_usage(stdout);
@@ -486,12 +517,15 @@ static int parse_args(int argc, char **argv,
     if (strcmp(argv[i], "--menu") == 0) {
       g_cfg.common.menu_mode = true;
     }
+    if (strcmp(argv[i], "--check-policy") == 0) {
+      g_cfg.common.check_policy = true;
+    }
   }
 
   const char *data_hex  = NULL;
   int positional_start  = 1;
 
-  if (g_cfg.common.menu_mode) {
+  if (g_cfg.common.menu_mode || g_cfg.common.check_policy) {
     positional_start = 1;
   } else {
     if (argc < 4) {
@@ -679,6 +713,11 @@ static void print_usage(FILE *f) {
     "  --quiet             suppress per-row trace on stdout\n"
     "  --color / --no-color\n"
     "  --encrypt / --no-encrypt\n"
+    "  --require-aead / --require-signed / --require-x509\n"
+    "                      minimum security the device must advertise; the\n"
+    "                      client refuses (exit 2) a device that offers less\n"
+    "  --check-policy      check the security floor against the device and\n"
+    "                      exit (0 met, 2 refused); run no secure operation\n"
     "  --help              print this and exit 0\n"
     "\n"
     "swr / swrpoll payload:\n"

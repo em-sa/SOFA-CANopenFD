@@ -54,6 +54,20 @@ typedef enum {
   FBSEC_CLIENT_TS_OFF     = 2
 } fbsec_client_ts_state_t;
 
+/**
+ * Client-held minimum security floor. The C000h capability descriptor is read
+ * cold and is spoofable, so the required level is LOCAL client policy, never
+ * taken from the device: a client aborts a device that advertises less than
+ * its floor instead of falling back. The descriptor may only ever raise the
+ * bar, never lower the configured minimum.
+ */
+typedef enum {
+  FBSEC_CLIENT_SEC_ANY    = 0,  /**< no floor (default): descriptor is advisory */
+  FBSEC_CLIENT_SEC_AEAD   = 1,  /**< device must advertise the AEAD mechanism   */
+  FBSEC_CLIENT_SEC_SIGNED = 2,  /**< device must advertise RPK (signed) access  */
+  FBSEC_CLIENT_SEC_X509   = 3   /**< device must advertise X.509 certificates   */
+} fbsec_client_min_sec_t;
+
 /** Variant-agnostic CLI cfg. Filled by the common-flag matcher. */
 typedef struct fbsec_client_cfg_t {
   bool                       verbose;
@@ -70,6 +84,10 @@ typedef struct fbsec_client_cfg_t {
   bool                       menu_mode;
   const char                *batch_path;
   bool                       stop_on_fail;
+  /* Client-held minimum security floor; default ANY (no floor). */
+  fbsec_client_min_sec_t     min_security;
+  /* Check the min-security floor against the device and exit, run nothing. */
+  bool                       check_policy;
 } fbsec_client_cfg_t;
 
 #ifdef __cplusplus
