@@ -118,6 +118,17 @@ bool fbsec_server_asym_claim(const uint8_t *voucher, uint16_t len);
  */
 bool fbsec_server_asym_install_provisioning(const uint8_t *payload, uint16_t len);
 
+/**
+ * @brief The Provisioning key accepted by the last successful install.
+ *
+ * Lets the handover layer bridge the installed key into the live secure-OD
+ * session-key slot, so it becomes a working session key rather than dead
+ * storage.
+ *
+ * @return pointer to FBSEC_AEAD_KEY_SIZE key bytes, or NULL if none installed.
+ */
+const uint8_t *fbsec_server_asym_provisioning_key(void);
+
 /* ---- Peer LDevID table (signed-FBsec verification) -------------------- */
 
 /**

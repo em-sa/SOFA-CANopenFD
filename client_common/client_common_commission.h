@@ -40,9 +40,41 @@ int fbsec_commission_verify_genuineness(const fbsec_secure_transport_t *transpor
                                         uint16_t target, uint32_t timeout_ms);
 
 #if FBSEC_HANDOVER_AUTHORIZED
-/** Handover step 2 (authorized): present the ownership voucher. */
+/** Handover step 2 (authorized): present the ownership voucher. If a voucher
+ *  file was loaded (@ref fbsec_commission_load_voucher_file) it is relayed
+ *  as-is; otherwise the demo voucher is built and signed on the spot. */
 int fbsec_commission_present_voucher(const fbsec_secure_transport_t *transport,
                                      uint16_t target, uint32_t timeout_ms);
+
+/** Present a caller-supplied voucher blob (no signing). @p len must equal
+ *  FBSEC_HO_VOUCHER_LEN. */
+int fbsec_commission_present_voucher_bytes(const fbsec_secure_transport_t *transport,
+                                           uint16_t target, uint32_t timeout_ms,
+                                           const uint8_t *voucher, uint16_t len);
+
+/**
+ * @brief Build and sign the demo ownership voucher for this device.
+ *
+ * Models the offline manufacturer/MASA step: the artifact a registrar relays.
+ * @param out       receives the voucher (>= FBSEC_HO_VOUCHER_LEN bytes).
+ * @param out_size  capacity of @p out.
+ * @param out_len   receives the voucher length (may be NULL).
+ * @retval 0  built; nonzero on bad buffer or signing failure.
+ */
+int fbsec_commission_build_voucher(uint8_t *out, uint16_t out_size, uint16_t *out_len);
+
+/**
+ * @brief Load a relayed voucher from a hex-text file (comments after '#').
+ *        Once loaded, present_voucher relays it instead of self-signing.
+ * @retval 0  loaded; nonzero on open/parse error or wrong length.
+ */
+int fbsec_commission_load_voucher_file(const char *path);
+
+/**
+ * @brief Emit the demo voucher as a hex-text file (the offline MASA step).
+ * @retval 0  written; nonzero on build or write error.
+ */
+int fbsec_commission_emit_voucher_file(const char *path);
 #endif
 
 /** Handover step 3 (both models): install the Provisioning Key (signed). */

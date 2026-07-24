@@ -20,6 +20,8 @@
 
 #include "server_common_asym.h"
 #include "server_common_trace.h"
+#include "server_common_lifecycle.h"
+#include "server_common_keys.h"
 #include "fbsec_asym.h"
 #include "fbsec_secure_od.h"
 
@@ -108,20 +110,36 @@ static bool handle_ldevid(uint16_t client_dev, const uint8_t *req, uint16_t req_
               reply, (uint16_t)sizeof reply, req, req_len, send_reply, user);
 }
 
-/* Provisioning-Key install: req = key[16] || SIG[64]; reply = ACK / abort. */
+/* Provisioning-Key install: req = key[16] || SIG[64]; reply = ACK / abort.
+   On success the accepted key is bridged into the live secure-OD Provisioning
+   session-key slot (so real sessions use it, not dead storage) and the device
+   advances to Operational. */
 static bool handle_provision(uint16_t client_dev, const uint8_t *req, uint16_t req_len,
                              fbsec_send_reply_fn_t send_reply, void *user) {
   bool ok = fbsec_server_asym_install_provisioning(req, req_len);
+  if (ok) {
+    const uint8_t *pk = fbsec_server_asym_provisioning_key();
+    if (pk != NULL) {
+      (void)fbsec_sod_set_key_ex(FBSEC_DEMO_KEYID_PROVISIONING, pk,
+                                 FBSEC_DEMO_KEYID_VALUE_PROVISIONING);
+    }
+    fbsec_server_lifecycle_set(FBSEC_STAGE_OPERATIONAL);
+  }
   return emit(client_dev, FBSEC_HO_PROVISION_ID, "HOPK",
               ok ? FBSEC_ABORT_NONE : FBSEC_ABORT_SIG_VERIFY, NULL, 0u,
               req, req_len, send_reply, user);
 }
 
 #if FBSEC_HANDOVER_AUTHORIZED
-/* Ownership voucher claim: req = voucher[108]; reply = ACK / abort. */
+/* Ownership voucher claim: req = voucher[108]; reply = ACK / abort. A
+   successful claim establishes the owner and advances the device from
+   Uncommissioned to Owned; the key ladder that follows reaches Operational. */
 static bool handle_voucher(uint16_t client_dev, const uint8_t *req, uint16_t req_len,
                            fbsec_send_reply_fn_t send_reply, void *user) {
   bool ok = fbsec_server_asym_claim(req, req_len);
+  if (ok) {
+    fbsec_server_lifecycle_set(FBSEC_STAGE_OWNED);
+  }
   return emit(client_dev, FBSEC_HO_VOUCHER_ID, "HOVC",
               ok ? FBSEC_ABORT_NONE : FBSEC_ABORT_VOUCHER, NULL, 0u,
               req, req_len, send_reply, user);

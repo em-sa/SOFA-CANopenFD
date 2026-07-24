@@ -213,6 +213,11 @@ bool fbsec_server_asym_install_provisioning(const uint8_t *payload, uint16_t len
   return true;
 }
 
+const uint8_t *fbsec_server_asym_provisioning_key(void)
+{
+  return g_st.provisioning_set ? g_st.provisioning_key : NULL;
+}
+
 bool fbsec_server_asym_set_peer(uint8_t slot, const fbsec_pubkey_t *pk)
 {
   if ((slot == 0u) || (slot > FBSEC_SERVER_ASYM_PEER_SLOTS) || (pk == NULL))

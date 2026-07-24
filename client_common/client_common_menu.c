@@ -834,15 +834,51 @@ static lifecycle_state_t lifecycle_read_state(
   return st;
 }
 
-/* Print the state banner and the transitions valid in the current state,
-   then return the number of numbered options offered (0 if none). */
-static unsigned lifecycle_print(const lifecycle_state_t *st) {
-  unsigned opt = 0u;
+/* Lifecycle transitions the submenu can offer. Which apply is decided from
+   the live state; only some are wired (see lifecycle_do_action). */
+typedef enum {
+  LC_ACT_VOUCHER = 0,   /* claim by voucher, then install the Provisioning key */
+  LC_ACT_TOKEN,         /* present the Device Claim Token, then install (Phase 3) */
+  LC_ACT_LADDER,        /* install the next ladder key (Phase 3)               */
+  LC_ACT_DECOMMISSION   /* factory restore (Phase 4)                           */
+} lifecycle_action_t;
+
+#define LC_ACT_MAX 4u
+
+/* Build the ordered action list valid for @p st. Returns the count and fills
+   @p out (capacity LC_ACT_MAX). */
+static unsigned lifecycle_actions(const lifecycle_state_t *st,
+                                  lifecycle_action_t out[LC_ACT_MAX]) {
+  unsigned n = 0u;
+  if (st->commissioning != FBSEC_STAT_COMMISSIONED) {
+    if ((st->handover & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) { out[n++] = LC_ACT_VOUCHER; }
+    if ((st->handover & FBSEC_DESC_HANDOVER_TOKEN)   != 0u) { out[n++] = LC_ACT_TOKEN; }
+  } else {
+    out[n++] = LC_ACT_LADDER;
+    out[n++] = LC_ACT_DECOMMISSION;
+  }
+  return n;
+}
+
+static const char *lifecycle_action_label(lifecycle_action_t a) {
+  switch (a) {
+    case LC_ACT_VOUCHER:      return "Claim ownership by voucher, then install the Provisioning key";
+    case LC_ACT_TOKEN:        return "Present the Device Claim Token and install the Provisioning key";
+    case LC_ACT_LADDER:       return "Install the next key in the ladder (Integrator, Operator)";
+    case LC_ACT_DECOMMISSION: return "Decommission / factory restore";
+    default:                  return "?";
+  }
+}
+
+/* Print the state banner and the numbered action list. */
+static void lifecycle_print(const lifecycle_state_t *st,
+                            const lifecycle_action_t *acts, unsigned n) {
+  unsigned i;
 
   printf("=== lifecycle / commissioning ===\n");
   if (!st->ok) {
     printf("  could not read C001h status from the target\n");
-    return 0u;
+    return;
   }
 
   printf("  stage:  %s\n",
@@ -863,42 +899,71 @@ static unsigned lifecycle_print(const lifecycle_state_t *st) {
   }
   printf("  ------------------------------\n");
 
-  if (st->commissioning != FBSEC_STAT_COMMISSIONED) {
-    if ((st->handover & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) {
-      printf("  %u) Claim ownership by voucher, then install the "
-             "Provisioning key\n", ++opt);
+  for (i = 0u; i < n; ++i) {
+    printf("  %u) %s\n", i + 1u, lifecycle_action_label(acts[i]));
+  }
+  if (n == 0u) {
+    if ((st->handover & FBSEC_DESC_HANDOVER_TOFU) != 0u) {
+      printf("  claim-on-first-use (TOFU): the first secure session takes\n"
+             "  ownership; there is no explicit gate step to run here\n");
+    } else {
+      printf("  (device advertises no ownership gate)\n");
     }
-    if ((st->handover & FBSEC_DESC_HANDOVER_TOKEN) != 0u) {
-      printf("  %u) Present the Device Claim Token and install the "
-             "Provisioning key\n", ++opt);
-    }
-    if (opt == 0u) {
-      if ((st->handover & FBSEC_DESC_HANDOVER_TOFU) != 0u) {
-        printf("  claim-on-first-use (TOFU): the first secure session takes\n"
-               "  ownership; there is no explicit gate step to run here\n");
-      } else {
-        printf("  (device advertises no ownership gate)\n");
-      }
-    }
-  } else {
-    printf("  %u) Install the next key in the ladder "
-           "(Integrator, Operator)\n", ++opt);
-    printf("  %u) Decommission / factory restore\n", ++opt);
   }
   printf("  Q) Back\n");
-  return opt;
+}
+
+/* Perform one selected transition. Returns true if the caller should re-read
+   state (an action ran, wired or not). */
+static bool lifecycle_do_action(lifecycle_action_t a,
+                                const fbsec_secure_transport_t *transport,
+                                uint16_t target, uint32_t timeout_ms) {
+  switch (a) {
+#if FBSEC_FEATURE_ASYM && FBSEC_HANDOVER_AUTHORIZED
+    case LC_ACT_VOUCHER: {
+      int rc = fbsec_commission_present_voucher(transport, target, timeout_ms);
+      if (rc != 0) {
+        printf("  voucher claim rejected (rc=%d); device not owned\n", rc);
+        return true;
+      }
+      printf("  ownership claimed\n");
+      rc = fbsec_commission_install_provisioning(transport, target, timeout_ms);
+      if (rc != 0) {
+        printf("  Provisioning-key install failed (rc=%d)\n", rc);
+        return true;
+      }
+      printf("  Provisioning key installed; the device is now operational\n");
+      return true;
+    }
+#endif
+    case LC_ACT_TOKEN:
+      printf("  the token gate is not implemented in this build yet\n");
+      return false;
+    case LC_ACT_LADDER:
+      printf("  the Integrator/Operator key ladder is not implemented yet\n");
+      return false;
+    case LC_ACT_DECOMMISSION:
+      printf("  decommission / factory restore is not implemented yet\n");
+      return false;
+    default:
+      printf("  this transition is not wired in this build yet\n");
+      return false;
+  }
 }
 
 /* State-driven lifecycle submenu. Reads the live server state on entry and
-   after each action, and offers only the transitions valid now. Phase 1
-   wires the state read and the option set; the transition actions land with
-   the provisioning path. */
+   after each action, and offers only the transitions valid now. The voucher
+   gate performs a real claim + Provisioning-key install; the token gate, the
+   key ladder and decommission land in later phases. */
 static void lifecycle_submenu(const fbsec_secure_transport_t *transport,
                               uint16_t target, uint32_t timeout_ms) {
   char line[32];
   for (;;) {
-    lifecycle_state_t st = lifecycle_read_state(transport, target, timeout_ms);
-    unsigned opts = lifecycle_print(&st);
+    lifecycle_state_t  st = lifecycle_read_state(transport, target, timeout_ms);
+    lifecycle_action_t acts[LC_ACT_MAX];
+    unsigned           n = st.ok ? lifecycle_actions(&st, acts) : 0u;
+
+    lifecycle_print(&st, acts, n);
 
     printf("Lifecycle choice: ");
     fflush(stdout);
@@ -914,17 +979,14 @@ static void lifecycle_submenu(const fbsec_secure_transport_t *transport,
     }
 
     {
-      char    *end = NULL;
+      char         *end = NULL;
       unsigned long sel = strtoul(line, &end, 10);
-      if ((end == line) || (*end != '\0') || (sel < 1ul) || (sel > opts)) {
+      if ((end == line) || (*end != '\0') || (sel < 1ul) || (sel > n)) {
         printf("  ?? not an option here: %s\n", line);
         continue;
       }
+      (void)lifecycle_do_action(acts[sel - 1ul], transport, target, timeout_ms);
     }
-    /* A valid transition was selected. The provisioning and decommission
-       actions arrive with the later lifecycle phases; until then the
-       submenu shows the state and the path without performing the step. */
-    printf("  this transition is not wired in this build yet\n");
   }
 }
 

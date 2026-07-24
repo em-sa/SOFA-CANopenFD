@@ -86,6 +86,9 @@ typedef struct {
   char     bus_host[64];
   int      bus_port;
   char     name[SIM_NAME_MAX + 1];
+#if FBSEC_FEATURE_ASYM && FBSEC_HANDOVER_AUTHORIZED
+  const char *voucher_path;     /* --voucher FILE: relay this voucher, if set */
+#endif
 } client_variant_cfg_t;
 
 static fbsec_co_fd_carrier_t g_carrier;
@@ -341,6 +344,26 @@ int main(int argc, char **argv) {
     return run_descriptor_command(argc, argv);
   }
 
+#if FBSEC_FEATURE_ASYM && FBSEC_HANDOVER_AUTHORIZED
+  /* One-shot utility: emit the demo ownership voucher to a file and exit
+     (the offline manufacturer/MASA step). Needs no bus. */
+  {
+    int ai;
+    for (ai = 1; (ai + 1) < argc; ++ai) {
+      if (strcmp(argv[ai], "--emit-voucher") == 0) {
+        int erc = fbsec_commission_emit_voucher_file(argv[ai + 1]);
+        if (erc != 0) {
+          fprintf(stderr, EXEC_NAME ": emit voucher to '%s' failed (rc=%d)\n",
+                  argv[ai + 1], erc);
+          return 1;
+        }
+        printf("wrote demo ownership voucher to %s\n", argv[ai + 1]);
+        return 0;
+      }
+    }
+  }
+#endif
+
   /* Defaults. */
   memset(&g_cfg, 0, sizeof g_cfg);
   g_cfg.common.timeout_ms = 1000u;
@@ -360,6 +383,18 @@ int main(int argc, char **argv) {
 
   /* Mirror node id into SOFA device_id field. */
   g_my_dev = (uint16_t)g_cfg.node_id;
+
+#if FBSEC_FEATURE_ASYM && FBSEC_HANDOVER_AUTHORIZED
+  /* --voucher FILE: relay this voucher instead of self-signing one. */
+  if (g_cfg.voucher_path != NULL) {
+    int vrc = fbsec_commission_load_voucher_file(g_cfg.voucher_path);
+    if (vrc != 0) {
+      fprintf(stderr, EXEC_NAME ": failed to load voucher '%s' (rc=%d)\n",
+              g_cfg.voucher_path, vrc);
+      return 1;
+    }
+  }
+#endif
 
   bool use_color = fbsec_client_cli_resolve_color(g_cfg.common.color_pref);
   bool show_ts   = fbsec_client_cli_resolve_show_ts(g_cfg.common.ts_state, false);
@@ -615,6 +650,11 @@ static int parse_args(int argc, char **argv,
     } else if (strcmp(a, "--data") == 0 && (i + 1) < argc) {
       data_hex = argv[i + 1];
       i += 2;
+#if FBSEC_FEATURE_ASYM && FBSEC_HANDOVER_AUTHORIZED
+    } else if (strcmp(a, "--voucher") == 0 && (i + 1) < argc) {
+      g_cfg.voucher_path = argv[i + 1];
+      i += 2;
+#endif
     } else {
       fprintf(stderr, EXEC_NAME ": unknown option '%s'\n", a);
       print_usage(stderr);
@@ -718,6 +758,12 @@ static void print_usage(FILE *f) {
     "                      client refuses (exit 2) a device that offers less\n"
     "  --check-policy      check the security floor against the device and\n"
     "                      exit (0 met, 2 refused); run no secure operation\n"
+#if FBSEC_FEATURE_ASYM && FBSEC_HANDOVER_AUTHORIZED
+    "  --voucher FILE      relay this ownership voucher in the lifecycle (L)\n"
+    "                      submenu instead of self-signing the demo one\n"
+    "  --emit-voucher FILE write the demo ownership voucher to FILE and exit\n"
+    "                      (the offline manufacturer/MASA step)\n"
+#endif
     "  --help              print this and exit 0\n"
     "\n"
     "swr / swrpoll payload:\n"

@@ -17,8 +17,10 @@
 #if FBSEC_FEATURE_ASYM
 
 #include <string.h>
+#include <stdio.h>
 
 #include "client_common_asym.h"
+#include "client_common_cli.h"
 #include "fbsec_asym_demo.h"
 
 /* Fixed demo Provisioning Key the tool installs (public demo material). */
@@ -80,17 +82,20 @@ int fbsec_commission_verify_genuineness(const fbsec_secure_transport_t *transpor
 }
 
 #if FBSEC_HANDOVER_AUTHORIZED
-int fbsec_commission_present_voucher(const fbsec_secure_transport_t *transport,
-                                     uint16_t target, uint32_t timeout_ms) {
+
+/* A voucher relayed from a file, if one was loaded; otherwise the demo
+   voucher is built and signed on the spot (client holds the demo mfg key). */
+static uint8_t g_voucher[FBSEC_HO_VOUCHER_LEN];
+static bool    g_voucher_loaded = false;
+
+int fbsec_commission_build_voucher(uint8_t *out, uint16_t out_size, uint16_t *out_len) {
   static const uint8_t serial[FBSEC_ASYM_SERIAL_LEN] = FBSEC_DEMO_DEVICE_SERIAL_BYTES;
-  uint8_t  voucher[FBSEC_HO_VOUCHER_LEN];
   uint8_t  body[FBSEC_ASYM_SERIAL_LEN + FBSEC_ASYM_PUBKEY_SIZE + 4u];
   uint8_t  transcript[FBSEC_ASYM_TRANSCRIPT_OVERHEAD + sizeof body];
   uint16_t o = 0u;
   uint16_t tn;
-  fbsec_abort_t abrt = FBSEC_ABORT_NONE;
 
-  if (transport == NULL || transport->write == NULL) { return 1; }
+  if ((out == NULL) || (out_size < (uint16_t)FBSEC_HO_VOUCHER_LEN)) { return 1; }
 
   /* body = serial || integrator_pub || epoch(LE) */
   memcpy(&body[o], serial, FBSEC_ASYM_SERIAL_LEN); o = (uint16_t)(o + FBSEC_ASYM_SERIAL_LEN);
@@ -99,17 +104,100 @@ int fbsec_commission_present_voucher(const fbsec_secure_transport_t *transport,
   body[o++] = (uint8_t)(DEMO_VOUCHER_EPOCH & 0xFFu);
   body[o++] = 0u; body[o++] = 0u; body[o++] = 0u;
 
-  memcpy(voucher, body, o);
+  memcpy(out, body, o);
   tn = fbsec_asym_transcript(FBSEC_ASYM_RD_VOUCHER, body, o,
                              transcript, (uint16_t)sizeof transcript);
   if ((tn == 0u) ||
-      !fbsec_asym_sign(fbsec_client_asym_manufacturer(), transcript, tn, &voucher[o])) {
+      !fbsec_asym_sign(fbsec_client_asym_manufacturer(), transcript, tn, &out[o])) {
     return 6;
   }
+  if (out_len != NULL) { *out_len = (uint16_t)FBSEC_HO_VOUCHER_LEN; }
+  return 0;
+}
+
+int fbsec_commission_present_voucher_bytes(const fbsec_secure_transport_t *transport,
+                                           uint16_t target, uint32_t timeout_ms,
+                                           const uint8_t *voucher, uint16_t len) {
+  fbsec_abort_t abrt = FBSEC_ABORT_NONE;
+  if ((transport == NULL) || (transport->write == NULL) || (voucher == NULL)) { return 1; }
+  if (len != (uint16_t)FBSEC_HO_VOUCHER_LEN) { return 7; }
   if (transport->write(transport->ctx, target, FBSEC_HO_VOUCHER_ID,
-                       voucher, FBSEC_HO_VOUCHER_LEN, timeout_ms, &abrt) != FBSEC_SECP_OK) {
+                       voucher, len, timeout_ms, &abrt) != FBSEC_SECP_OK) {
     return 2;
   }
+  return 0;
+}
+
+int fbsec_commission_present_voucher(const fbsec_secure_transport_t *transport,
+                                     uint16_t target, uint32_t timeout_ms) {
+  uint8_t  voucher[FBSEC_HO_VOUCHER_LEN];
+  uint16_t n = 0u;
+  int      rc;
+
+  if (g_voucher_loaded) {
+    return fbsec_commission_present_voucher_bytes(transport, target, timeout_ms,
+                                                  g_voucher, (uint16_t)FBSEC_HO_VOUCHER_LEN);
+  }
+  rc = fbsec_commission_build_voucher(voucher, (uint16_t)sizeof voucher, &n);
+  if (rc != 0) { return rc; }
+  return fbsec_commission_present_voucher_bytes(transport, target, timeout_ms, voucher, n);
+}
+
+/* Read @p path, dropping '#'-to-end-of-line comments, into @p out (a NUL-
+   terminated hex string). Returns 0 on success. */
+static int slurp_hex_text(const char *path, char *out, size_t out_size) {
+  FILE  *f;
+  size_t w = 0u;
+  int    c;
+  bool   in_comment = false;
+
+  if ((path == NULL) || (out == NULL) || (out_size == 0u)) { return 1; }
+  f = fopen(path, "rb");
+  if (f == NULL) { return 1; }
+  while ((c = fgetc(f)) != EOF) {
+    if (c == '#') { in_comment = true; continue; }
+    if (c == '\n') { in_comment = false; continue; }
+    if (in_comment) { continue; }
+    if (w < (out_size - 1u)) { out[w++] = (char)c; }
+    else { fclose(f); return 1; }   /* overflow */
+  }
+  fclose(f);
+  out[w] = '\0';
+  return 0;
+}
+
+int fbsec_commission_load_voucher_file(const char *path) {
+  char    text[512];
+  uint8_t buf[FBSEC_HO_VOUCHER_LEN];
+  size_t  n = 0u;
+
+  if (slurp_hex_text(path, text, sizeof text) != 0) { return 1; }
+  if (fbsec_client_cli_parse_hex(text, buf, sizeof buf, &n) != 0) { return 2; }
+  if (n != (size_t)FBSEC_HO_VOUCHER_LEN) { return 3; }
+  memcpy(g_voucher, buf, FBSEC_HO_VOUCHER_LEN);
+  g_voucher_loaded = true;
+  return 0;
+}
+
+int fbsec_commission_emit_voucher_file(const char *path) {
+  uint8_t  voucher[FBSEC_HO_VOUCHER_LEN];
+  uint16_t n = 0u;
+  FILE    *f;
+  uint16_t i;
+  int      rc;
+
+  rc = fbsec_commission_build_voucher(voucher, (uint16_t)sizeof voucher, &n);
+  if (rc != 0) { return rc; }
+  f = fopen(path, "wb");
+  if (f == NULL) { return 10; }
+  (void)fprintf(f, "# SOFA demo ownership voucher (offline MASA artifact).\n");
+  (void)fprintf(f, "# serial || integrator_pub || epoch(LE) || SIG_mfg; %u bytes hex.\n",
+                (unsigned)n);
+  for (i = 0u; i < n; ++i) {
+    (void)fprintf(f, "%02X%s", voucher[i], (((i + 1u) % 16u) == 0u) ? "\n" : " ");
+  }
+  (void)fprintf(f, "\n");
+  (void)fclose(f);
   return 0;
 }
 #endif /* FBSEC_HANDOVER_AUTHORIZED */
