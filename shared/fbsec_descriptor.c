@@ -218,8 +218,25 @@ bool fbsec_caps_deserialize_sub(fbsec_caps_t *c, uint8_t sub,
 
 /* ---- C001h status ---------------------------------------------------- */
 
+/* The one claim gate active on this build. Exactly one gate is active at a
+ * time; the authorized asymmetric build uses the voucher gate, an
+ * asymmetric build without it the token gate, an AEAD-only build TOFU. */
+static uint8_t desc_active_gate(void)
+{
+#if FBSEC_FEATURE_ASYM
+#if FBSEC_HANDOVER_AUTHORIZED
+  return FBSEC_DESC_HANDOVER_VOUCHER;
+#else
+  return FBSEC_DESC_HANDOVER_TOKEN;
+#endif
+#else
+  return FBSEC_DESC_HANDOVER_TOFU;
+#endif
+}
+
 void fbsec_descriptor_build_status(uint8_t commissioning,
                                    uint8_t keys_installed,
+                                   uint8_t identities,
                                    fbsec_status_t *out)
 {
   if (out == NULL)
@@ -228,13 +245,18 @@ void fbsec_descriptor_build_status(uint8_t commissioning,
   }
   out->highest_sub    = FBSEC_DESC_STAT_SUB_MAX;
   out->commissioning  = commissioning;
+  out->active_gate    = desc_active_gate();
   out->keys_installed = keys_installed;
+  /* Active AEAD algorithm and tag length, same encoding as C000h sub 02h. */
+  out->active_aead    = (uint32_t)desc_aead_bitmap() |
+                        (((uint32_t)(FBSEC_AEAD_TAG_LEN_BYTES) & 0xFFu) << 8);
+  out->identities     = identities;
 }
 
 uint16_t fbsec_status_serialize_sub(const fbsec_status_t *s, uint8_t sub,
                                     uint8_t *out, uint16_t out_max)
 {
-  if ((s == NULL) || (out == NULL) || (out_max < 1u))
+  if ((s == NULL) || (out == NULL))
   {
     return 0u;
   }
@@ -242,13 +264,28 @@ uint16_t fbsec_status_serialize_sub(const fbsec_status_t *s, uint8_t sub,
   switch (sub)
   {
     case 0x00u:
+      if (out_max < 1u) { return 0u; }
       out[0] = s->highest_sub;
       return 1u;
     case 0x01u:
+      if (out_max < 1u) { return 0u; }
       out[0] = s->commissioning;
       return 1u;
     case 0x02u:
+      if (out_max < 1u) { return 0u; }
+      out[0] = s->active_gate;
+      return 1u;
+    case 0x03u:
+      if (out_max < 1u) { return 0u; }
       out[0] = s->keys_installed;
+      return 1u;
+    case 0x04u:
+      if (out_max < 4u) { return 0u; }
+      put_u32le(out, s->active_aead);
+      return 4u;
+    case 0x05u:
+      if (out_max < 1u) { return 0u; }
+      out[0] = s->identities;
       return 1u;
     default:
       return 0u;
@@ -258,7 +295,7 @@ uint16_t fbsec_status_serialize_sub(const fbsec_status_t *s, uint8_t sub,
 bool fbsec_status_deserialize_sub(fbsec_status_t *s, uint8_t sub,
                                   const uint8_t *in, uint16_t len)
 {
-  if ((s == NULL) || (in == NULL) || (len != 1u))
+  if ((s == NULL) || (in == NULL))
   {
     return false;
   }
@@ -266,13 +303,28 @@ bool fbsec_status_deserialize_sub(fbsec_status_t *s, uint8_t sub,
   switch (sub)
   {
     case 0x00u:
+      if (len != 1u) { return false; }
       s->highest_sub = in[0];
       return true;
     case 0x01u:
+      if (len != 1u) { return false; }
       s->commissioning = in[0];
       return true;
     case 0x02u:
+      if (len != 1u) { return false; }
+      s->active_gate = in[0];
+      return true;
+    case 0x03u:
+      if (len != 1u) { return false; }
       s->keys_installed = in[0];
+      return true;
+    case 0x04u:
+      if (len != 4u) { return false; }
+      s->active_aead = get_u32le(in);
+      return true;
+    case 0x05u:
+      if (len != 1u) { return false; }
+      s->identities = in[0];
       return true;
     default:
       return false;

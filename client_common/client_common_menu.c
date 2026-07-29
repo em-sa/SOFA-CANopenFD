@@ -615,12 +615,37 @@ static bool interpret_sub(uint16_t index, uint8_t sub,
           return true;
         case 0x02u:
           if (v == 0u) {
+            (void)snprintf(out, outsz, "active claim gate: none");
+          } else {
+            (void)snprintf(out, outsz, "active claim gate:%s%s%s",
+              ((v & FBSEC_DESC_HANDOVER_TOFU) != 0u)    ? " TOFU" : "",
+              ((v & FBSEC_DESC_HANDOVER_TOKEN) != 0u)   ? " token" : "",
+              ((v & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) ? " voucher" : "");
+          }
+          return true;
+        case 0x03u:
+          if (v == 0u) {
             (void)snprintf(out, outsz, "keys installed: none");
           } else {
             (void)snprintf(out, outsz, "keys installed:%s%s%s",
               ((v & FBSEC_STAT_KEY_PROVISIONING) != 0u) ? " Provisioning" : "",
               ((v & FBSEC_STAT_KEY_INTEGRATOR) != 0u)   ? " Integrator" : "",
               ((v & FBSEC_STAT_KEY_OPERATOR) != 0u)     ? " Operator" : "");
+          }
+          return true;
+        case 0x04u:
+          (void)snprintf(out, outsz, "active AEAD: %s, tag %u bytes",
+            menu_aead_name((uint8_t)(v & 0xFFu)),
+            (unsigned)((v >> 8) & 0xFFu));
+          return true;
+        case 0x05u:
+          if (v == 0u) {
+            (void)snprintf(out, outsz, "device identities: none");
+          } else {
+            (void)snprintf(out, outsz, "device identities:%s%s%s",
+              ((v & FBSEC_DESC_ID_IDEVID) != 0u)       ? " IDevID" : "",
+              ((v & FBSEC_DESC_ID_LDEVID) != 0u)       ? " LDevID" : "",
+              ((v & FBSEC_DESC_ID_X509) != 0u)         ? " X509" : "");
           }
           return true;
         default:
@@ -825,7 +850,8 @@ typedef struct {
   uint8_t handover;       /* C000h:06h FBSEC_DESC_HANDOVER_* bitmap    */
 } lifecycle_state_t;
 
-/* Read C001h:01h/:02h and C000h:06h with tracing silenced. */
+/* Read C001h:01h (commissioning) and :03h (keys), plus C000h:07h (claim
+   gates), with tracing silenced. */
 static lifecycle_state_t lifecycle_read_state(
     const fbsec_secure_transport_t *transport,
     uint16_t target, uint32_t timeout_ms) {
@@ -839,11 +865,11 @@ static lifecycle_state_t lifecycle_read_state(
     st.ok = true;
     st.commissioning = buf[0];
   }
-  if (lifecycle_cold_read(transport, target, 0xC001u, 0x02u, timeout_ms,
+  if (lifecycle_cold_read(transport, target, 0xC001u, 0x03u, timeout_ms,
                           buf, (uint32_t)sizeof buf) >= 1u) {
     st.keys = buf[0];
   }
-  if (lifecycle_cold_read(transport, target, 0xC000u, 0x06u, timeout_ms,
+  if (lifecycle_cold_read(transport, target, 0xC000u, 0x07u, timeout_ms,
                           buf, (uint32_t)sizeof buf) >= 1u) {
     st.handover = buf[0];
   }

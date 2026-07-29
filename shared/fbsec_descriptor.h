@@ -48,7 +48,7 @@ extern "C" {
 #define FBSEC_DESC_CAP_INDEX     0xC000u  /* capability record            */
 #define FBSEC_DESC_STAT_INDEX    0xC001u  /* status record                */
 #define FBSEC_DESC_CAP_SUB_MAX   0x08u    /* highest C000h sub-index       */
-#define FBSEC_DESC_STAT_SUB_MAX  0x02u    /* highest C001h sub-index (mand)*/
+#define FBSEC_DESC_STAT_SUB_MAX  0x05u    /* highest C001h sub-index        */
 
 /* ---- C000h sub 01h: security type word (U32), mirrors CiA 1301 1000h -- */
 /* bits 11:0  security profile number (0 = no standard profile)
@@ -133,9 +133,12 @@ typedef struct
 
 typedef struct
 {
-  uint8_t highest_sub;    /* sub 00h */
-  uint8_t commissioning;  /* sub 01h: FBSEC_STAT_UNCOMMISSIONED / _COMMISSIONED */
-  uint8_t keys_installed; /* sub 02h: FBSEC_STAT_KEY_* bitmap */
+  uint8_t  highest_sub;    /* sub 00h */
+  uint8_t  commissioning;  /* sub 01h: FBSEC_STAT_UNCOMMISSIONED / _COMMISSIONED */
+  uint8_t  active_gate;    /* sub 02h: the one active claim gate (FBSEC_DESC_HANDOVER_*) */
+  uint8_t  keys_installed; /* sub 03h: FBSEC_STAT_KEY_* bitmap */
+  uint32_t active_aead;    /* sub 04h: active AEAD algorithm (low) + tag length (byte 1) */
+  uint8_t  identities;     /* sub 05h: device identities present (FBSEC_DESC_ID_*) */
 } fbsec_status_t;
 
 /* ---- C000h capabilities: build / serialize / deserialize ------------- */
@@ -173,12 +176,18 @@ bool fbsec_caps_deserialize_sub(fbsec_caps_t *c, uint8_t sub,
 /**
  * @brief Build the C001h status record from live device state.
  *
+ * The active claim gate and the active AEAD algorithm are build-derived;
+ * the caller supplies the live commissioning state, the populated key
+ * slots and the identity artifacts present.
+ *
  * @param commissioning   FBSEC_STAT_UNCOMMISSIONED / _COMMISSIONED.
  * @param keys_installed  FBSEC_STAT_KEY_* bitmap of populated key slots.
+ * @param identities      FBSEC_DESC_ID_* bitmap of identity artifacts present.
  * @param out             record to fill.
  */
 void fbsec_descriptor_build_status(uint8_t commissioning,
                                    uint8_t keys_installed,
+                                   uint8_t identities,
                                    fbsec_status_t *out);
 
 /**

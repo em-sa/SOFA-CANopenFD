@@ -87,8 +87,13 @@ static bool try_serve_descriptor(uint16_t src_dev, uint32_t data_id,
     if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR)) {
       keys |= FBSEC_STAT_KEY_OPERATOR;
     }
+    uint8_t ids = 0u;
+#if FBSEC_FEATURE_ASYM
+    if (fbsec_server_asym_idevid_present()) { ids |= FBSEC_DESC_ID_IDEVID; }
+    if (fbsec_server_asym_ldevid_present()) { ids |= FBSEC_DESC_ID_LDEVID; }
+#endif
     fbsec_descriptor_build_status(fbsec_server_lifecycle_commissioning(),
-                                  keys, &stat);
+                                  keys, ids, &stat);
     highest = stat.highest_sub;
     sub_exists = ((data_id & 0xFFu) == 0u) && (sub <= highest);
     if (sub_exists && (payload_len == 0u)) {
