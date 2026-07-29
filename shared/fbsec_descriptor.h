@@ -5,7 +5,7 @@
  * @brief   SOFA CiA 720 capability + status descriptor (read-only, unauth).
  *          aka FBsec - FieldBus Security
  * @author  Embedded Systems Academy (EmSA), opensource@em-sa.com
- * @version V2.0 of 22-JUL-2026
+ * @version V2.1 of 29-JUL-2026
  *
  * Builds and (de)serializes the two base descriptors of the CiA 720
  * security object dictionary:
@@ -17,9 +17,9 @@
  * before any key or identity exists, then fails closed on features the
  * peer does not advertise. As of the CiA 720 migration the two
  * records no longer share a shape: C000h carries a security type word and
- * a manufacturer-capabilities word (subs 00h..07h); C001h is a minimal
- * status array (subs 00h..02h). They therefore have separate build /
- * serialize / deserialize entry points.
+ * a set of capability bitmaps; C001h reports the active configuration.
+ * They therefore have separate build / serialize / deserialize entry
+ * points.
  *
  * This module is ALWAYS compiled. An AEAD-only build (FBSEC_FEATURE_ASYM
  * == 0) advertises the AEAD mechanism alone; an FBSEC_FEATURE_ASYM build
@@ -47,16 +47,15 @@ extern "C" {
 
 #define FBSEC_DESC_CAP_INDEX     0xC000u  /* capability record            */
 #define FBSEC_DESC_STAT_INDEX    0xC001u  /* status record                */
-#define FBSEC_DESC_CAP_SUB_MAX   0x07u    /* highest C000h sub-index       */
+#define FBSEC_DESC_CAP_SUB_MAX   0x08u    /* highest C000h sub-index       */
 #define FBSEC_DESC_STAT_SUB_MAX  0x02u    /* highest C001h sub-index (mand)*/
 
-/* ---- C000h sub 01h: security type word (U32) ------------------------- */
-/* bits  7:0  security profile number
- * bits 11:8  capability level (0..3 => C0..C3)
- * bits 15:12 restore capability (highest restore depth, 0..4)
- * bits 18:16 mechanisms supported (b16 AEAD, b17 RPK, b18 X509)
- * bits 22:19 algorithm-suite generation
- * bits 31:23 reserved, profile-defined                                    */
+/* ---- C000h sub 01h: security type word (U32), mirrors CiA 1301 1000h -- */
+/* bits 11:0  security profile number (0 = no standard profile)
+ * bits 15:12 capability level (0..3 => C0..C3)
+ * bits 31:16 additional information, defined by the reported profile.
+ * Per the "Capability levels and profiles" section of CiA 720-1 and the
+ * "Object C000h" section of CiA 720-2.                                     */
 
 #define FBSEC_PROFILE_CUSTOM        0x00u
 #define FBSEC_PROFILE_OPEN          0x01u
@@ -65,54 +64,52 @@ extern "C" {
 #define FBSEC_PROFILE_IDENTIFIED    0x04u
 #define FBSEC_PROFILE_CONFIDENTIAL  0x05u
 
-#define FBSEC_MECH_AEAD  0x01u  /* type-word b16 */
-#define FBSEC_MECH_RPK   0x02u  /* type-word b17 */
-#define FBSEC_MECH_X509  0x04u  /* type-word b18 */
+#define FBSEC_TYPEWORD(profile, level)                            \
+  (  ((uint32_t)(profile) & 0x0FFFu)                              \
+   | (((uint32_t)(level)   & 0x0Fu) << 12) )
 
-#define FBSEC_TYPEWORD(profile, level, restore, mech, suite)      \
-  (  ((uint32_t)(profile) & 0xFFu)                                \
-   | (((uint32_t)(level)   & 0x0Fu) << 8)                         \
-   | (((uint32_t)(restore) & 0x0Fu) << 12)                        \
-   | (((uint32_t)(mech)    & 0x07u) << 16)                        \
-   | (((uint32_t)(suite)   & 0x0Fu) << 19) )
+#define FBSEC_TYPEWORD_PROFILE(tw)  ((uint16_t)((tw) & 0x0FFFu))
+#define FBSEC_TYPEWORD_LEVEL(tw)    ((uint8_t)(((tw) >> 12) & 0x0Fu))
 
-#define FBSEC_TYPEWORD_PROFILE(tw)  ((uint8_t)((tw) & 0xFFu))
-#define FBSEC_TYPEWORD_LEVEL(tw)    ((uint8_t)(((tw) >> 8)  & 0x0Fu))
-#define FBSEC_TYPEWORD_RESTORE(tw)  ((uint8_t)(((tw) >> 12) & 0x0Fu))
-#define FBSEC_TYPEWORD_MECH(tw)     ((uint8_t)(((tw) >> 16) & 0x07u))
-#define FBSEC_TYPEWORD_SUITE(tw)    ((uint8_t)(((tw) >> 19) & 0x0Fu))
-
-/* ---- C000h sub 02h: session-protocol bitmap (U32) -------------------- */
-#define FBSEC_DESC_PROTO_FBSEC         0x0001u
-#define FBSEC_DESC_PROTO_TLS_PSK       0x0002u
-#define FBSEC_DESC_PROTO_CTLS          0x0004u
-#define FBSEC_DESC_PROTO_TLS13         0x0008u
-
-/* ---- C000h sub 03h low byte: AEAD primitive bitmap ------------------- */
+/* ---- C000h sub 02h: AEAD algorithms (low byte) + tag length (byte 1) - */
+/* One bit per AEAD algorithm of the CiA 720-1 Table 5 registry
+ * (01h AES-128-GCM, 02h AES-256-GCM). Byte 1 carries the tag length.       */
 #define FBSEC_DESC_AEAD_AES128_GCM     0x01u
 #define FBSEC_DESC_AEAD_AES256_GCM     0x02u
 #define FBSEC_DESC_AEAD_ASCON128       0x04u
 #define FBSEC_DESC_AEAD_CHACHA20       0x08u
 
-/* ---- C000h sub 04h: RPK algorithm id --------------------------------- */
-#define FBSEC_DESC_RPK_NONE            0x00u
-#define FBSEC_DESC_RPK_ED25519         0x01u
+/* ---- C000h sub 03h: key derivation functions (U16 bitmap) ------------ */
+#define FBSEC_DESC_KDF_HKDF_SHA256     0x0001u  /* registry id 10h */
 
-/* ---- C000h sub 05h: identity / certificate flags --------------------- */
+/* ---- C000h sub 04h: signature algorithms (U16 bitmap) ---------------- */
+#define FBSEC_DESC_SIG_ED25519         0x0001u  /* registry id 30h */
+
+/* ---- C000h sub 05h: symmetric key levels supported (U8 bitmap) ------- */
+#define FBSEC_DESC_SYMLVL_PROVISIONING 0x01u
+#define FBSEC_DESC_SYMLVL_INTEGRATOR   0x02u
+#define FBSEC_DESC_SYMLVL_OPERATOR     0x04u
+
+/* ---- C000h sub 06h: asymmetric key presence (U8 bitmap) -------------- */
 #define FBSEC_DESC_ID_IDEVID           0x01u
 #define FBSEC_DESC_ID_LDEVID           0x02u
 #define FBSEC_DESC_ID_X509             0x08u
 
-/* ---- C000h sub 06h: handover-model bitmap (WP-104 claim gates) ------- */
+/* ---- C000h sub 07h: claim gates supported (U8 bitmap) ---------------- */
 #define FBSEC_DESC_HANDOVER_TOFU       0x01u  /* b0 claim on first use     */
-#define FBSEC_DESC_HANDOVER_TOKEN      0x02u  /* b1 printed one-time token  */
-#define FBSEC_DESC_HANDOVER_VOUCHER    0x04u  /* b2 manufacturer voucher    */
+#define FBSEC_DESC_HANDOVER_TOKEN      0x02u  /* b1 device claim token      */
+#define FBSEC_DESC_HANDOVER_VOUCHER    0x04u  /* b2 ownership voucher       */
+
+/* ---- C000h sub 08h: mechanisms implemented (U16 bitmap) -------------- */
+#define FBSEC_MECH_AEAD  0x01u
+#define FBSEC_MECH_RPK   0x02u
+#define FBSEC_MECH_X509  0x04u
 
 /* ---- C001h sub 01h: commissioning state ------------------------------ */
 #define FBSEC_STAT_UNCOMMISSIONED      0x00u
 #define FBSEC_STAT_COMMISSIONED        0x01u
 
-/* ---- C001h sub 02h: keys-installed bitmap ---------------------------- */
+/* ---- C001h keys-installed bitmap ------------------------------------- */
 #define FBSEC_STAT_KEY_PROVISIONING    0x01u
 #define FBSEC_STAT_KEY_INTEGRATOR      0x02u
 #define FBSEC_STAT_KEY_OPERATOR        0x04u
@@ -122,13 +119,14 @@ extern "C" {
 typedef struct
 {
   uint8_t  highest_sub;    /* sub 00h */
-  uint32_t type_word;      /* sub 01h */
-  uint32_t session_proto;  /* sub 02h */
-  uint32_t aead_and_tag;   /* sub 03h: low = AEAD bitmap, byte1 = tag len */
-  uint8_t  rpk_alg;        /* sub 04h */
-  uint8_t  id_flags;       /* sub 05h */
-  uint8_t  handover_model; /* sub 06h */
-  uint32_t mfg_caps;       /* sub 07h */
+  uint32_t type_word;      /* sub 01h: profile 11:0, level 15:12 */
+  uint32_t aead_and_tag;   /* sub 02h: low = AEAD bitmap, byte1 = tag len */
+  uint16_t kdf;            /* sub 03h: KDF bitmap */
+  uint16_t sig_alg;        /* sub 04h: signature-algorithm bitmap */
+  uint8_t  sym_levels;     /* sub 05h: symmetric key levels bitmap */
+  uint8_t  id_flags;       /* sub 06h: asymmetric key presence */
+  uint8_t  handover_model; /* sub 07h: claim gates supported */
+  uint16_t mechanisms;     /* sub 08h: mechanisms implemented */
 } fbsec_caps_t;
 
 /* ---- Decoded C001h record -------------------------------------------- */

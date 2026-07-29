@@ -78,9 +78,9 @@ bool fbsec_client_caps_meets_min(const fbsec_caps_t *caps,
   if (caps == NULL) {
     return false;
   }
-  /* Mechanisms live in the sub 01h type word; an absent sub 01h leaves the
+  /* Mechanisms live in the sub 08h bitmap; an absent sub 08h leaves the
      field zero, which fails any non-ANY floor - the intended fail-closed. */
-  uint8_t mech = FBSEC_TYPEWORD_MECH(caps->type_word);
+  uint16_t mech = caps->mechanisms;
   if (floor == FBSEC_CLIENT_SEC_AEAD) {
     return (mech & FBSEC_MECH_AEAD) != 0u;
   }

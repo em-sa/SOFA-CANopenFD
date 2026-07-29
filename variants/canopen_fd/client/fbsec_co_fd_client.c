@@ -203,54 +203,57 @@ static void print_caps(uint32_t target, const fbsec_caps_t *caps) {
   printf("capability descriptor of node %u:\n", (unsigned)target);
   printf("  highest sub-index       : 0x%02X\n", (unsigned)caps->highest_sub);
   if (caps->highest_sub >= 0x01u) {
-    uint8_t mech = FBSEC_TYPEWORD_MECH(caps->type_word);
     printf("  security type word      : 0x%08lX\n",
            (unsigned long)caps->type_word);
     printf("    profile               : %u (%s)\n",
            (unsigned)FBSEC_TYPEWORD_PROFILE(caps->type_word),
-           profile_name(FBSEC_TYPEWORD_PROFILE(caps->type_word)));
+           profile_name((uint8_t)FBSEC_TYPEWORD_PROFILE(caps->type_word)));
     printf("    capability level      : C%u\n",
            (unsigned)FBSEC_TYPEWORD_LEVEL(caps->type_word));
-    printf("    restore depth         : %u\n",
-           (unsigned)FBSEC_TYPEWORD_RESTORE(caps->type_word));
-    printf("    mechanisms            : AEAD %s, RPK %s, X509 %s\n",
-           ((mech & FBSEC_MECH_AEAD) != 0u) ? "yes" : "no",
-           ((mech & FBSEC_MECH_RPK)  != 0u) ? "yes" : "no",
-           ((mech & FBSEC_MECH_X509) != 0u) ? "yes" : "no");
-    printf("    suite generation      : %u\n",
-           (unsigned)FBSEC_TYPEWORD_SUITE(caps->type_word));
   }
   if (caps->highest_sub >= 0x02u) {
-    printf("  session-protocol bitmap : 0x%08lX\n",
-           (unsigned long)caps->session_proto);
-  }
-  if (caps->highest_sub >= 0x03u) {
     printf("  AEAD / tag length       : 0x%08lX (%s, tag %u bytes)\n",
            (unsigned long)caps->aead_and_tag,
            aead_bitmap_name((uint8_t)(caps->aead_and_tag & 0x00FFu)),
            (unsigned)((caps->aead_and_tag >> 8) & 0x00FFu));
   }
+  if (caps->highest_sub >= 0x03u) {
+    printf("  key derivation functions: 0x%04X (HKDF-SHA-256 %s)\n",
+           (unsigned)caps->kdf,
+           ((caps->kdf & FBSEC_DESC_KDF_HKDF_SHA256) != 0u) ? "yes" : "no");
+  }
   if (caps->highest_sub >= 0x04u) {
-    printf("  RPK algorithm id        : %u (%s)\n",
-           (unsigned)caps->rpk_alg, fbsec_caps_has_ed25519(caps) ? "Ed25519" : "none");
+    printf("  signature algorithms    : 0x%04X (Ed25519 %s)\n",
+           (unsigned)caps->sig_alg,
+           fbsec_caps_has_ed25519(caps) ? "yes" : "no");
   }
   if (caps->highest_sub >= 0x05u) {
-    printf("  identity flags          : 0x%02X (IDevID %s, LDevID %s, X509 %s)\n",
+    printf("  symmetric key levels    : 0x%02X (Provisioning %s, Integrator %s, Operator %s)\n",
+           (unsigned)caps->sym_levels,
+           ((caps->sym_levels & FBSEC_DESC_SYMLVL_PROVISIONING) != 0u) ? "yes" : "no",
+           ((caps->sym_levels & FBSEC_DESC_SYMLVL_INTEGRATOR)   != 0u) ? "yes" : "no",
+           ((caps->sym_levels & FBSEC_DESC_SYMLVL_OPERATOR)     != 0u) ? "yes" : "no");
+  }
+  if (caps->highest_sub >= 0x06u) {
+    printf("  asymmetric key presence : 0x%02X (IDevID %s, LDevID %s, X509 %s)\n",
            (unsigned)caps->id_flags,
            ((caps->id_flags & FBSEC_DESC_ID_IDEVID) != 0u) ? "yes" : "no",
            ((caps->id_flags & FBSEC_DESC_ID_LDEVID) != 0u) ? "yes" : "no",
            ((caps->id_flags & FBSEC_DESC_ID_X509)   != 0u) ? "yes" : "no");
   }
-  if (caps->highest_sub >= 0x06u) {
-    printf("  handover model          : 0x%02X (TOFU %s, token %s, voucher %s)\n",
+  if (caps->highest_sub >= 0x07u) {
+    printf("  claim gates supported   : 0x%02X (TOFU %s, token %s, voucher %s)\n",
            (unsigned)caps->handover_model,
            ((caps->handover_model & FBSEC_DESC_HANDOVER_TOFU)    != 0u) ? "yes" : "no",
            ((caps->handover_model & FBSEC_DESC_HANDOVER_TOKEN)   != 0u) ? "yes" : "no",
            ((caps->handover_model & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) ? "yes" : "no");
   }
-  if (caps->highest_sub >= 0x07u) {
-    printf("  mfg-specific capabilities: 0x%08lX\n",
-           (unsigned long)caps->mfg_caps);
+  if (caps->highest_sub >= 0x08u) {
+    printf("  mechanisms implemented  : 0x%04X (AEAD %s, RPK %s, X509 %s)\n",
+           (unsigned)caps->mechanisms,
+           ((caps->mechanisms & FBSEC_MECH_AEAD) != 0u) ? "yes" : "no",
+           ((caps->mechanisms & FBSEC_MECH_RPK)  != 0u) ? "yes" : "no",
+           ((caps->mechanisms & FBSEC_MECH_X509) != 0u) ? "yes" : "no");
   }
 }
 

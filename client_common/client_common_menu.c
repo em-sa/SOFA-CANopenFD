@@ -544,58 +544,64 @@ static bool interpret_sub(uint16_t index, uint8_t sub,
   switch (index) {
     case 0xC000u:
       switch (sub) {
-        case 0x01u: {
-          uint8_t m = FBSEC_TYPEWORD_MECH(v);
+        case 0x01u:
           (void)snprintf(out, outsz,
-            "type word: profile %s, level C%u, restore %u, mechanisms%s%s%s, suite gen %u",
-            menu_profile_name(FBSEC_TYPEWORD_PROFILE(v)),
-            (unsigned)FBSEC_TYPEWORD_LEVEL(v),
-            (unsigned)FBSEC_TYPEWORD_RESTORE(v),
-            ((m & FBSEC_MECH_AEAD) != 0u) ? " AEAD" : "",
-            ((m & FBSEC_MECH_RPK)  != 0u) ? " RPK"  : "",
-            ((m & FBSEC_MECH_X509) != 0u) ? " X509" : "",
-            (unsigned)FBSEC_TYPEWORD_SUITE(v));
+            "type word: profile %s, level C%u",
+            menu_profile_name((uint8_t)FBSEC_TYPEWORD_PROFILE(v)),
+            (unsigned)FBSEC_TYPEWORD_LEVEL(v));
           return true;
-        }
         case 0x02u:
-          (void)snprintf(out, outsz, "session protocols:%s%s%s%s",
-            ((v & FBSEC_DESC_PROTO_FBSEC) != 0u)        ? " FBsec" : "",
-            ((v & FBSEC_DESC_PROTO_TLS_PSK) != 0u)      ? " TLS-PSK" : "",
-            ((v & FBSEC_DESC_PROTO_CTLS) != 0u)         ? " cTLS" : "",
-            ((v & FBSEC_DESC_PROTO_TLS13) != 0u)        ? " TLS1.3" : "");
-          return true;
-        case 0x03u:
           (void)snprintf(out, outsz, "%s, tag %u bytes",
             menu_aead_name((uint8_t)(v & 0xFFu)),
             (unsigned)((v >> 8) & 0xFFu));
           return true;
+        case 0x03u:
+          (void)snprintf(out, outsz, "KDF:%s",
+            ((v & FBSEC_DESC_KDF_HKDF_SHA256) != 0u) ? " HKDF-SHA-256" : " none");
+          return true;
         case 0x04u:
-          (void)snprintf(out, outsz, "RPK algorithm: %s",
-            (b[0] == FBSEC_DESC_RPK_ED25519) ? "Ed25519" :
-            (b[0] == FBSEC_DESC_RPK_NONE)    ? "none" : "reserved");
+          (void)snprintf(out, outsz, "signature:%s",
+            ((v & FBSEC_DESC_SIG_ED25519) != 0u) ? " Ed25519" : " none");
           return true;
         case 0x05u:
           if (v == 0u) {
-            (void)snprintf(out, outsz, "identity flags: none");
+            (void)snprintf(out, outsz, "symmetric key levels: none");
           } else {
-            (void)snprintf(out, outsz, "identity flags:%s%s%s",
+            (void)snprintf(out, outsz, "symmetric key levels:%s%s%s",
+              ((v & FBSEC_DESC_SYMLVL_PROVISIONING) != 0u) ? " Provisioning" : "",
+              ((v & FBSEC_DESC_SYMLVL_INTEGRATOR) != 0u)   ? " Integrator" : "",
+              ((v & FBSEC_DESC_SYMLVL_OPERATOR) != 0u)     ? " Operator" : "");
+          }
+          return true;
+        case 0x06u:
+          if (v == 0u) {
+            (void)snprintf(out, outsz, "asymmetric key presence: none");
+          } else {
+            (void)snprintf(out, outsz, "asymmetric key presence:%s%s%s",
               ((v & FBSEC_DESC_ID_IDEVID) != 0u)       ? " IDevID" : "",
               ((v & FBSEC_DESC_ID_LDEVID) != 0u)       ? " LDevID" : "",
               ((v & FBSEC_DESC_ID_X509) != 0u)         ? " X509" : "");
           }
           return true;
-        case 0x06u:
+        case 0x07u:
           if (v == 0u) {
-            (void)snprintf(out, outsz, "handover: none");
+            (void)snprintf(out, outsz, "claim gates: none");
           } else {
-            (void)snprintf(out, outsz, "handover:%s%s%s",
+            (void)snprintf(out, outsz, "claim gates:%s%s%s",
               ((v & FBSEC_DESC_HANDOVER_TOFU) != 0u)    ? " TOFU" : "",
-              ((v & FBSEC_DESC_HANDOVER_TOKEN) != 0u)   ? " printed-token" : "",
+              ((v & FBSEC_DESC_HANDOVER_TOKEN) != 0u)   ? " token" : "",
               ((v & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) ? " voucher" : "");
           }
           return true;
-        case 0x07u:
-          (void)snprintf(out, outsz, "manufacturer-specific capabilities");
+        case 0x08u:
+          if (v == 0u) {
+            (void)snprintf(out, outsz, "mechanisms: none");
+          } else {
+            (void)snprintf(out, outsz, "mechanisms:%s%s%s",
+              ((v & FBSEC_MECH_AEAD) != 0u) ? " AEAD" : "",
+              ((v & FBSEC_MECH_RPK)  != 0u) ? " RPK"  : "",
+              ((v & FBSEC_MECH_X509) != 0u) ? " X509" : "");
+          }
           return true;
         default:
           return false;
