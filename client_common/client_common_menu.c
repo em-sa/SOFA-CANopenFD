@@ -1015,7 +1015,7 @@ static bool lifecycle_do_action(lifecycle_action_t a,
         printf("  loading ownership voucher (%u bytes):\n", (unsigned)vlen);
         lifecycle_dump_hex(vbuf, vlen);
       }
-      printf("  -> C020h:01h  present voucher (ownership claim)\n");
+      printf("  -> C020h:02h  present voucher (ownership claim)\n");
       rc = fbsec_commission_present_voucher(transport, target, timeout_ms);
       if (rc != 0) {
         printf("  voucher claim rejected (rc=%d); device not owned\n", rc);

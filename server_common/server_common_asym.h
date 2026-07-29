@@ -136,9 +136,10 @@ const uint8_t *fbsec_server_asym_provisioning_key(void);
  * the device uncommissioned. Keeps the factory IDevID, the manufacturer
  * anchor and the peer table (so genuineness and signed access still work).
  *
- * Demo note: the owner epoch is reset to its starting value so the same demo
- * voucher can re-claim the device. A production device keeps the monotonic
- * epoch (rollback protection) and would require a fresh, higher-epoch voucher.
+ * The owner epoch is retained: it is a monotonic rollback guard (CiA 720-2
+ * owner epoch) that survives a manufacturer reset, so a re-claim requires a
+ * fresh voucher whose epoch is higher than the retained one. The demo client
+ * mints that next-generation voucher from the device's current epoch.
  */
 void fbsec_server_asym_decommission(void);
 

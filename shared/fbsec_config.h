@@ -166,8 +166,8 @@
 
 /* Handover model: 0 = basic (born-open / integrator-rooted, no
  * voucher), 1 = authorized (adds ownership voucher + owner epoch +
- * integrator-authorization). Default ON so the voucher claim (C020h:01h)
- * and owner epoch (C020h:02h) objects are live and the RPK handover story
+ * integrator-authorization). Default ON so the owner epoch (C020h:01h)
+ * and voucher claim (C020h:02h) objects are live and the RPK handover story
  * is complete; requires FBSEC_FEATURE_ASYM. */
 #ifndef FBSEC_HANDOVER_AUTHORIZED
 #  define FBSEC_HANDOVER_AUTHORIZED FBSEC_FEATURE_ASYM

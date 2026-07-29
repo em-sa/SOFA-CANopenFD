@@ -85,8 +85,8 @@ extern "C" {
  * are their own indices. */
 
 #define FBSEC_HO_IDENTITY_ID   0xC0280000u  /* C028h:00 signed identity read  */
-#define FBSEC_HO_VOUCHER_ID    0xC0200100u  /* C020h:01 ownership voucher      */
-#define FBSEC_HO_EPOCH_ID      0xC0200200u  /* C020h:02 owner epoch RO U32     */
+#define FBSEC_HO_EPOCH_ID      0xC0200100u  /* C020h:01 owner epoch RO U32     */
+#define FBSEC_HO_VOUCHER_ID    0xC0200200u  /* C020h:02 ownership voucher      */
 #define FBSEC_HO_PROVISION_ID  0xC02F0000u  /* C02Fh:00 provisioning install   */
 #define FBSEC_HO_LDEVID_ID     0xC0200300u  /* C020h:03 LDevID generate/export */
 #define FBSEC_HO_KEY_SET_ID    0xC01F0000u  /* C01Fh:00 key-set install ladder */

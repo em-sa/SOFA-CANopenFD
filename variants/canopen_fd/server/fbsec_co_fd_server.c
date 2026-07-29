@@ -234,7 +234,7 @@ int main(int argc, char **argv) {
 #if FBSEC_FEATURE_ASYM
   fprintf(stderr,
           "  RPK security objects (CiA 720, Ed25519 signed):\n"
-          "    idx 0xC020 sub 1..3  ownership: voucher / epoch / LDevID export\n"
+          "    idx 0xC020 sub 1..3  ownership: epoch / voucher / LDevID export\n"
           "    idx 0xC021 sub 0x00  public keys (manufacturer, integrator)\n"
           "    idx 0xC022 sub 0x00  public key types\n"
           "    idx 0xC028 sub 0x00  signed identity read\n"
@@ -379,7 +379,7 @@ static void print_usage(FILE *f) {
     "    idx 0xC01F sub 0x00  SECURE_WO key set (rolling-key install ladder)\n"
 #if FBSEC_FEATURE_ASYM
     "  RPK security objects (CiA 720, Ed25519 signed):\n"
-    "    idx 0xC020 sub 1..3  ownership: voucher / epoch / LDevID export\n"
+    "    idx 0xC020 sub 1..3  ownership: epoch / voucher / LDevID export\n"
     "    idx 0xC021 sub 0x00  public keys (manufacturer, integrator)\n"
     "    idx 0xC022 sub 0x00  public key types\n"
     "    idx 0xC028 sub 0x00  signed identity read\n"

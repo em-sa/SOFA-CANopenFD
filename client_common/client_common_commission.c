@@ -44,7 +44,9 @@ static const uint8_t DEMO_CLAIM_TOKEN[32] = {
 static uint8_t g_claim_token[FBSEC_AEAD_KEY_SIZE];
 static bool    g_claim_token_set = false;
 
-/* Demo ownership epoch (must advance past the device's starting epoch). */
+/* Fallback / emit ownership epoch. The live claim path mints one past the
+   device's current epoch instead; this value is used for the offline
+   emit-voucher file and when the epoch cannot be read. */
 #define DEMO_VOUCHER_EPOCH  2u
 
 const uint8_t *fbsec_commission_claim_token(void) {
@@ -117,7 +119,8 @@ int fbsec_commission_verify_genuineness(const fbsec_secure_transport_t *transpor
 static uint8_t g_voucher[FBSEC_HO_VOUCHER_LEN];
 static bool    g_voucher_loaded = false;
 
-int fbsec_commission_build_voucher(uint8_t *out, uint16_t out_size, uint16_t *out_len) {
+static int build_voucher_epoch(uint8_t *out, uint16_t out_size, uint16_t *out_len,
+                               uint32_t epoch) {
   static const uint8_t serial[FBSEC_ASYM_SERIAL_LEN] = FBSEC_DEMO_DEVICE_SERIAL_BYTES;
   uint8_t  body[FBSEC_ASYM_SERIAL_LEN + FBSEC_ASYM_PUBKEY_SIZE + 4u];
   uint8_t  transcript[FBSEC_ASYM_TRANSCRIPT_OVERHEAD + sizeof body];
@@ -130,8 +133,10 @@ int fbsec_commission_build_voucher(uint8_t *out, uint16_t out_size, uint16_t *ou
   memcpy(&body[o], serial, FBSEC_ASYM_SERIAL_LEN); o = (uint16_t)(o + FBSEC_ASYM_SERIAL_LEN);
   memcpy(&body[o], fbsec_client_asym_integrator()->pub, FBSEC_ASYM_PUBKEY_SIZE);
   o = (uint16_t)(o + FBSEC_ASYM_PUBKEY_SIZE);
-  body[o++] = (uint8_t)(DEMO_VOUCHER_EPOCH & 0xFFu);
-  body[o++] = 0u; body[o++] = 0u; body[o++] = 0u;
+  body[o++] = (uint8_t)(epoch & 0xFFu);
+  body[o++] = (uint8_t)((epoch >> 8) & 0xFFu);
+  body[o++] = (uint8_t)((epoch >> 16) & 0xFFu);
+  body[o++] = (uint8_t)((epoch >> 24) & 0xFFu);
 
   memcpy(out, body, o);
   tn = fbsec_asym_transcript(FBSEC_ASYM_RD_VOUCHER, body, o,
@@ -142,6 +147,28 @@ int fbsec_commission_build_voucher(uint8_t *out, uint16_t out_size, uint16_t *ou
   }
   if (out_len != NULL) { *out_len = (uint16_t)FBSEC_HO_VOUCHER_LEN; }
   return 0;
+}
+
+int fbsec_commission_build_voucher(uint8_t *out, uint16_t out_size, uint16_t *out_len) {
+  return build_voucher_epoch(out, out_size, out_len, DEMO_VOUCHER_EPOCH);
+}
+
+/* Read the device's current owner epoch (C020h:01h). Returns true on success. */
+static bool read_owner_epoch(const fbsec_secure_transport_t *transport,
+                             uint16_t target, uint32_t timeout_ms,
+                             uint32_t *out_epoch) {
+  uint8_t  buf[4];
+  uint32_t len  = 0u;
+  fbsec_abort_t abrt = FBSEC_ABORT_NONE;
+  if ((transport->read == NULL) ||
+      (transport->read(transport->ctx, target, FBSEC_HO_EPOCH_ID, NULL, 0u,
+                       buf, (uint32_t)sizeof buf, timeout_ms, &len, &abrt) != FBSEC_SECP_OK) ||
+      (len != 4u)) {
+    return false;
+  }
+  *out_epoch = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8)
+             | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+  return true;
 }
 
 int fbsec_commission_present_voucher_bytes(const fbsec_secure_transport_t *transport,
@@ -161,13 +188,21 @@ int fbsec_commission_present_voucher(const fbsec_secure_transport_t *transport,
                                      uint16_t target, uint32_t timeout_ms) {
   uint8_t  voucher[FBSEC_HO_VOUCHER_LEN];
   uint16_t n = 0u;
+  uint32_t cur_epoch = 0u;
+  uint32_t next_epoch;
   int      rc;
 
+  if (transport == NULL) { return 1; }
   if (g_voucher_loaded) {
     return fbsec_commission_present_voucher_bytes(transport, target, timeout_ms,
                                                   g_voucher, (uint16_t)FBSEC_HO_VOUCHER_LEN);
   }
-  rc = fbsec_commission_build_voucher(voucher, (uint16_t)sizeof voucher, &n);
+  /* Mint the next-generation voucher: one past the device's current owner
+     epoch, so a re-claim after a manufacturer reset advances the monotonic
+     epoch instead of replaying a used one. */
+  next_epoch = read_owner_epoch(transport, target, timeout_ms, &cur_epoch)
+                 ? (cur_epoch + 1u) : DEMO_VOUCHER_EPOCH;
+  rc = build_voucher_epoch(voucher, (uint16_t)sizeof voucher, &n, next_epoch);
   if (rc != 0) { return rc; }
   return fbsec_commission_present_voucher_bytes(transport, target, timeout_ms, voucher, n);
 }

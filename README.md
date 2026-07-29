@@ -150,7 +150,7 @@ from a vendored subset of Monocypher under `third_party/monocypher/`; see
 
 The RPK layer adds the following CiA 720 object-dictionary entries:
 
-- `C020h`: ownership control (voucher claim, owner epoch, LDevID generate and export).
+- `C020h`: ownership control (owner epoch, voucher claim, LDevID generate and export).
 - `C021h`: public keys the device holds for verification.
 - `C022h`: public-key types and lengths for the keys in `C021h`.
 - `C028h`: authenticated identification, signed (the RPK flavor of the AEAD identity read).
