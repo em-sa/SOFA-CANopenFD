@@ -157,6 +157,10 @@ extern "C" {
         ((uint16_t)(4u + 2u * (FBSEC_AEAD_DEV_ID_SIZE) + 4u + 2u))
 
 /* ---- AAD direction byte values --------------------------------------- */
+/* The direction is bound into the AAD at offset 2 so that a captured read
+   response cannot be reflected as a write request against a directly
+   accessed entry: the two directions authenticate under different AAD and a
+   tag from one never verifies as the other. */
 
 #define FBSEC_AEAD_DIR_READ_CHALLENGE      0x01u
 #define FBSEC_AEAD_DIR_READ_RESPONSE       0x02u

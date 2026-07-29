@@ -29,18 +29,22 @@
    writes and commands (installed at startup for the demo). */
 #define RPK_WRITE_PEER_SLOT   1u
 
-/* Transcript work buffers: the largest body is the signed write,
-   target_data_id[4] + server[2] + client[2] + server_nonce[16] +
-   client_nonce[16] + value[16] = 56 bytes; +2 transcript overhead. */
+/* Transcript work buffers: the largest body is a signed access,
+   server[2] + client[2] + object_mux[4] + data_len[2] + client_nonce[16] +
+   server_nonce[16] + value[16] = 58 bytes. */
 #define RPK_BODY_MAX          64u
 #define RPK_TRANSCRIPT_MAX    (RPK_BODY_MAX + FBSEC_ASYM_TRANSCRIPT_OVERHEAD)
 
-/* ---- Single outstanding write/command challenge ----------------------- */
+/* ---- Single outstanding signed-access challenge ----------------------- */
+/* One challenge may be armed at a time, across the signed read, write and
+   command flows. A signed access costs an Ed25519 operation, so this single
+   slot also rate-limits signed accesses: a peer cannot make the device spend
+   a verification without first holding the one outstanding challenge. */
 
 static struct {
   bool     armed;
   uint16_t client_dev;
-  uint32_t data_id;                         /* C042h:02 or C049h:00 */
+  uint32_t data_id;                         /* C042h:01, C042h:02 or C049h:00 */
   uint8_t  server_nonce[FBSEC_RPK_NONCE_LEN];
 } g_challenge;
 
@@ -58,6 +62,33 @@ static uint16_t put_u32le(uint8_t *p, uint32_t v) {
   p[2] = (uint8_t)((v >> 16) & 0xFFu);
   p[3] = (uint8_t)((v >> 24) & 0xFFu);
   return 4u;
+}
+
+/* Defined below; the read flow arms a challenge like the write and command. */
+static bool arm_challenge(uint16_t client_dev, uint32_t data_id,
+                          const char *verb, const uint8_t *req, uint16_t req_len,
+                          fbsec_send_reply_fn_t send_reply, void *user);
+
+/* Canonical signed-access transcript body (CiA 720-1 Table 6 body, CiA 720-4):
+   responder || requester || object multiplexor || protected-data length ||
+   requester random || responder random || protected data, little-endian. */
+static uint16_t build_signed_body(uint8_t *body, uint16_t server_id,
+                                  uint16_t client_id, uint32_t obj_mux,
+                                  const uint8_t *client_nonce,
+                                  const uint8_t *server_nonce,
+                                  const uint8_t *value, uint16_t value_len) {
+  uint16_t o = 0u;
+  o = (uint16_t)(o + put_u16le(&body[o], server_id));
+  o = (uint16_t)(o + put_u16le(&body[o], client_id));
+  o = (uint16_t)(o + put_u32le(&body[o], obj_mux));
+  o = (uint16_t)(o + put_u16le(&body[o], value_len));
+  memcpy(&body[o], client_nonce, FBSEC_RPK_NONCE_LEN);
+  o = (uint16_t)(o + FBSEC_RPK_NONCE_LEN);
+  memcpy(&body[o], server_nonce, FBSEC_RPK_NONCE_LEN);
+  o = (uint16_t)(o + FBSEC_RPK_NONCE_LEN);
+  memcpy(&body[o], value, value_len);
+  o = (uint16_t)(o + value_len);
+  return o;
 }
 
 /* Emit one reply + trace and return handled = true. */
@@ -143,49 +174,61 @@ static bool handle_pktypes(uint16_t client_dev, uint32_t data_id, uint8_t sub,
 static bool handle_generic_read(uint16_t client_dev, const uint8_t *req,
                                 uint16_t req_len,
                                 fbsec_send_reply_fn_t send_reply, void *user) {
+  const uint16_t hdr_len = 3u;                       /* index[2] + sub[1] */
+  const uint16_t p2_len  = (uint16_t)(hdr_len + FBSEC_RPK_NONCE_LEN);
   uint16_t target_index;
   uint8_t  target_sub;
   uint32_t target_id;
+  const uint8_t *client_nonce;
   uint8_t  val[FBSEC_RPK_VALUE_MAX];
   uint16_t vlen = 0u;
   fbsec_abort_t rd;
   uint8_t  body[RPK_BODY_MAX];
   uint8_t  transcript[RPK_TRANSCRIPT_MAX];
   uint8_t  reply[FBSEC_RPK_VALUE_MAX + FBSEC_ASYM_SIG_SIZE];
-  uint16_t o = 0u;
+  uint16_t blen;
   uint16_t tn;
 
-  if (req_len != FBSEC_RPK_READ_REQ_LEN) {
+  /* Pass 1: bare target header (index[2] + sub[1]) -> issue a challenge. */
+  if (req_len == hdr_len) {
+    return arm_challenge(client_dev, FBSEC_RPK_GENERIC_READ_ID, "C42R",
+                         req, req_len, send_reply, user);
+  }
+  /* Pass 2: index[2] + sub[1] + client_nonce[16]. */
+  if (req_len != p2_len) {
     return emit(client_dev, FBSEC_RPK_GENERIC_READ_ID, "C42R",
-                (req_len > FBSEC_RPK_READ_REQ_LEN) ? FBSEC_ABORT_LEN_TOO_HIGH
-                                                   : FBSEC_ABORT_LEN_TOO_LOW,
+                (req_len > p2_len) ? FBSEC_ABORT_LEN_TOO_HIGH
+                                   : FBSEC_ABORT_LEN_TOO_LOW,
                 NULL, 0u, req, req_len, send_reply, user);
+  }
+  if (!g_challenge.armed || (g_challenge.client_dev != client_dev) ||
+      (g_challenge.data_id != FBSEC_RPK_GENERIC_READ_ID)) {
+    return emit(client_dev, FBSEC_RPK_GENERIC_READ_ID, "C42R",
+                FBSEC_ABORT_NO_SESSION, NULL, 0u, req, req_len, send_reply, user);
   }
   target_index = (uint16_t)((uint16_t)req[0] | ((uint16_t)req[1] << 8));
   target_sub   = req[2];
   target_id    = ((uint32_t)target_index << 16) | ((uint32_t)target_sub << 8);
+  client_nonce = &req[hdr_len];
 
   rd = fbsec_sod_port_read_before(target_id, val, &vlen);
   if (rd != FBSEC_ABORT_NONE) {
+    g_challenge.armed = false;
     return emit(client_dev, FBSEC_RPK_GENERIC_READ_ID, "C42R", rd,
                 NULL, 0u, req, req_len, send_reply, user);
   }
   if (vlen > FBSEC_RPK_VALUE_MAX) {
+    g_challenge.armed = false;
     return emit(client_dev, FBSEC_RPK_GENERIC_READ_ID, "C42R",
                 FBSEC_ABORT_INTERNAL, NULL, 0u, req, req_len, send_reply, user);
   }
 
-  /* body = target_id[4] || server[2] || client[2] || client_nonce[16] || value */
-  o = (uint16_t)(o + put_u32le(&body[o], target_id));
-  o = (uint16_t)(o + put_u16le(&body[o], fbsec_sod_port_get_device_id()));
-  o = (uint16_t)(o + put_u16le(&body[o], client_dev));
-  memcpy(&body[o], &req[3], FBSEC_RPK_NONCE_LEN);
-  o = (uint16_t)(o + FBSEC_RPK_NONCE_LEN);
-  memcpy(&body[o], val, vlen);
-  o = (uint16_t)(o + vlen);
-
-  tn = fbsec_asym_transcript(FBSEC_ASYM_RD_GENERIC_READ, body, o,
+  blen = build_signed_body(body, fbsec_sod_port_get_device_id(), client_dev,
+                           target_id, client_nonce, g_challenge.server_nonce,
+                           val, vlen);
+  tn = fbsec_asym_transcript(FBSEC_ASYM_RD_GENERIC_READ, body, blen,
                              transcript, (uint16_t)sizeof transcript);
+  g_challenge.armed = false;                         /* one challenge, one response */
   memcpy(reply, val, vlen);
   if ((tn == 0u) ||
       !fbsec_asym_sign(fbsec_server_asym_idevid(), transcript, tn,
@@ -240,17 +283,9 @@ static fbsec_abort_t verify_signed(uint16_t client_dev, uint32_t challenge_id,
     return FBSEC_ABORT_SIG_VERIFY;           /* no authorizing key installed */
   }
 
-  /* body = bind_id[4] || server[2] || client[2] || server_nonce[16] ||
-            client_nonce[16] || value */
-  o = (uint16_t)(o + put_u32le(&body[o], bind_id));
-  o = (uint16_t)(o + put_u16le(&body[o], fbsec_sod_port_get_device_id()));
-  o = (uint16_t)(o + put_u16le(&body[o], client_dev));
-  memcpy(&body[o], g_challenge.server_nonce, FBSEC_RPK_NONCE_LEN);
-  o = (uint16_t)(o + FBSEC_RPK_NONCE_LEN);
-  memcpy(&body[o], client_nonce, FBSEC_RPK_NONCE_LEN);
-  o = (uint16_t)(o + FBSEC_RPK_NONCE_LEN);
-  memcpy(&body[o], value, value_len);
-  o = (uint16_t)(o + value_len);
+  o = build_signed_body(body, fbsec_sod_port_get_device_id(), client_dev,
+                        bind_id, client_nonce, g_challenge.server_nonce,
+                        value, value_len);
 
   tn = fbsec_asym_transcript(role, body, o, transcript,
                              (uint16_t)sizeof transcript);
