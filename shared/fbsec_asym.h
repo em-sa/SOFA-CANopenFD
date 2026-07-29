@@ -53,11 +53,12 @@ extern "C" {
 
 /* ---- Signature transcript construction (CiA 720-1 Table 6) ----------- */
 /* transcript = domain || 00h || algorithm || role || body. The domain
- * separator embeds the transcript version (v1) as its final element. */
+ * separator is an ASCII constant of CiA 720-1 that embeds the transcript
+ * version as its final element. */
 
 /** Domain separator: an ASCII constant of CiA 720-1, followed by a 00h byte. */
-#define FBSEC_ASYM_DOMAIN           "CANopen-Security-v1"
-#define FBSEC_ASYM_DOMAIN_LEN       19u
+#define FBSEC_ASYM_DOMAIN           "CiA-720-V0.0"
+#define FBSEC_ASYM_DOMAIN_LEN       12u
 
 /** Signature algorithm identifier in the transcript (CiA 720-1 Table 5). */
 #define FBSEC_ASYM_SIG_ALG_ED25519  0x30u
