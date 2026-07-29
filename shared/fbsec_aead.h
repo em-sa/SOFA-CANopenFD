@@ -34,6 +34,10 @@
  *   and data_len fields shift by 2 bytes between the two layouts;
  *   key_id stays at offset 3 on both.
  *
+ *   In CiA 720 terms the key_id byte is the key selector, and the data_id
+ *   is the object multiplexor (CiA 301 index and sub-index). The readable,
+ *   non-secret key identifier is a separate value, reported by C011h.
+ *
  *   CANopen FD variant (DEV_ID_SIZE = 1, prefix length 12, current default):
  *     0    protocol version          (FBSEC_AEAD_PROTOCOL_VERSION = 0x01)
  *     1    mechanism                  (FBSEC_AEAD_MECHANISM = (encrypt<<7)|prim)
@@ -124,7 +128,7 @@ extern "C" {
  *   bits 5-4 : reserved, must be 0; verifier rejects non-zero with
  *              FBSEC_ABORT_KEY_ID (C4h) so future bit assignments do
  *              not silently collide with old peers
- *   bits 3-0 : base key identifier (1..15)
+ *   bits 3-0 : base key selector (1..15)
  *
  * The whole key_id byte is part of the AAD prefix at offset 3, so a
  * downgrade attempt (flipping bit 7 / bit 6, repurposing a reserved
@@ -215,7 +219,7 @@ void fbsec_aead_xor_nonce(
  * @param server_device_id   Responder identifier (AAD); width set
  *                           by FBSEC_AEAD_DEV_ID_SIZE.
  * @param client_device_id   Requester identifier (AAD); same width.
- * @param data_id            Application data_id (AAD).
+ * @param data_id            Object multiplexor (AAD): CiA 301 index and sub-index.
  * @param client_random_rd   FBSEC_AEAD_RAND_SIZE bytes for
  *                           READ_RESPONSE / WRITE_REQUEST; ignored on
  *                           poll directions (pass NULL).

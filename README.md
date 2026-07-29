@@ -10,7 +10,7 @@ CANopen CC, EtherCAT) will plug in alongside under `variants/<name>/`.
 The CANopen FD variant exercises the secure verbs (`srd`, `swr`,
 `srdpoll`, `swrpoll`) over an unsegmented SDO (USDO) expedited carrier
 with an AES-128-GCM secure tunnel whose AAD covers addressing
-(server / client node IDs, data_id) and the wire keyid byte. See
+(server / client node IDs, the object multiplexor) and the key-selector byte. See
 `doc/` for the wire spec and the integration guides.
 
 > ⚠️ **Demonstrator — not for production.** SOFA is a teaching and

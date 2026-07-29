@@ -33,7 +33,9 @@ static void serve(fbsec_send_reply_fn_t send_reply, void *user,
 }
 
 /* C011h AEAD key identifiers: read-only, unsecured. sub 00h = slot count,
-   subs 01h..N = per-slot non-secret U32 key id (little-endian). */
+   subs 01h..N = per-slot non-secret UNSIGNED32 key identifier (little-endian).
+   The reserved values 00000000h and FFFFFFFFh mean "no valid key installed";
+   an empty slot reads 00000000h (see fbsec_sod_get_key_id_value). */
 static void serve_key_ids(uint16_t src_dev, uint32_t data_id, uint8_t sub,
                           const uint8_t *payload, uint16_t payload_len,
                           fbsec_send_reply_fn_t send_reply, void *user) {
