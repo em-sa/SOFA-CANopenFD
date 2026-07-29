@@ -13,6 +13,7 @@
  */
 
 #include "server_common_keys.h"
+#include "server_common_lifecycle.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,19 @@ const uint8_t FBSEC_DEMO_KEY_OPERATOR[32] = {
   0x77,0x66,0x55,0x44,0x33,0x22,0x11,0x00
 };
 
+/* Per-unit Device Claim Token (demo). On a real device this is a printed,
+   per-serial secret injected at manufacture; the client passes the same
+   bytes via --claim-token. It is used directly as the AEAD key that
+   authorizes the first (Provisioning) rung of the C01Fh ladder; a
+   production device would KDF it. Must match the client-side default in
+   client_common_commission.c. */
+const uint8_t FBSEC_DEMO_CLAIM_TOKEN[32] = {
+  0x01,0x23,0x45,0x67,0x89,0xAB,0xCD,0xEF,
+  0xFE,0xDC,0xBA,0x98,0x76,0x54,0x32,0x10,
+  0x01,0x23,0x45,0x67,0x89,0xAB,0xCD,0xEF,
+  0xFE,0xDC,0xBA,0x98,0x76,0x54,0x32,0x10
+};
+
 /* ---- Demo key install ------------------------------------------------- */
 
 void fbsec_server_install_demo_keys_if_unset(void) {
@@ -69,6 +83,60 @@ void fbsec_server_install_demo_keys_if_unset(void) {
                                FBSEC_DEMO_KEY_OPERATOR,
                                FBSEC_DEMO_KEYID_VALUE_OPERATOR);
   }
+}
+
+void fbsec_server_install_claim_token(void) {
+  if (!fbsec_sod_has_key(FBSEC_DEMO_KEYID_CLAIM_TOKEN)) {
+    (void)fbsec_sod_set_key_ex(FBSEC_DEMO_KEYID_CLAIM_TOKEN,
+                               FBSEC_DEMO_CLAIM_TOKEN,
+                               FBSEC_DEMO_KEYID_VALUE_CLAIM_TOKEN);
+  }
+}
+
+/* ---- C01Fh install ladder -------------------------------------------- */
+
+fbsec_abort_t fbsec_server_apply_key_set(const uint8_t *body, uint16_t len) {
+  uint8_t  selector;
+  uint32_t keyid_val;
+  uint8_t  authorizing;
+  uint8_t  need;
+
+  if ((body == NULL) || (len != (uint16_t)FBSEC_KEY_SET_BODY_LEN)) {
+    return FBSEC_ABORT_TYPE_MISMATCH;
+  }
+  selector  = body[0];
+  keyid_val = (uint32_t)body[1]
+            | ((uint32_t)body[2] << 8)
+            | ((uint32_t)body[3] << 16)
+            | ((uint32_t)body[4] << 24);
+
+  /* Rolling-key ladder: installing a tier must be authorized by the tier
+     below it (the key just proven present via the verified AEAD tag). */
+  switch (selector) {
+    case FBSEC_DEMO_KEYID_PROVISIONING: need = FBSEC_DEMO_KEYID_CLAIM_TOKEN;  break;
+    case FBSEC_DEMO_KEYID_INTEGRATOR:   need = FBSEC_DEMO_KEYID_PROVISIONING; break;
+    case FBSEC_DEMO_KEYID_OPERATOR:     need = FBSEC_DEMO_KEYID_INTEGRATOR;   break;
+    default:                            return FBSEC_ABORT_TYPE_MISMATCH; /* unknown tier */
+  }
+  authorizing = fbsec_sod_last_write_key_id();
+  if (authorizing != need) {
+    return FBSEC_ABORT_ROLE_DENIED;      /* wrong authorizing key for this rung */
+  }
+  if (fbsec_sod_has_key(selector)) {
+    return FBSEC_ABORT_DEVICE_STATE;     /* rung already installed (write-once) */
+  }
+  if (!fbsec_sod_set_key_ex(selector, &body[5], keyid_val)) {
+    return FBSEC_ABORT_DEVICE_STATE;
+  }
+
+  /* Advance the observable lifecycle from the rung just installed:
+     Operator present => Operational, else Provisioning present => Owned. */
+  if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR)) {
+    fbsec_server_lifecycle_set(FBSEC_STAGE_OPERATIONAL);
+  } else if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_PROVISIONING)) {
+    fbsec_server_lifecycle_set(FBSEC_STAGE_OWNED);
+  }
+  return FBSEC_ABORT_NONE;
 }
 
 /* ---- Hex string parser ----------------------------------------------- */

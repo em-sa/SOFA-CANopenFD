@@ -21,6 +21,8 @@
 
 #include "client_common_asym.h"
 #include "client_common_cli.h"
+#include "client_common_keys.h"
+#include "client_common_verbs.h"
 #include "fbsec_asym_demo.h"
 
 /* Fixed demo Provisioning Key the tool installs (public demo material). */
@@ -29,8 +31,35 @@ static const uint8_t DEMO_PROVISIONING_KEY[FBSEC_AEAD_KEY_SIZE] = {
   0x88u,0x99u,0xAAu,0xBBu,0xCCu,0xDDu,0xEEu,0xFFu
 };
 
+/* Demo Device Claim Token (public demo material; mirrors the server-side
+   FBSEC_DEMO_CLAIM_TOKEN in server_common_keys.c). 32 bytes so both AES-128
+   and AES-256 builds match the device; FBSEC_AEAD_KEY_SIZE bytes are used.
+   --claim-token overrides it via fbsec_commission_set_claim_token_hex. */
+static const uint8_t DEMO_CLAIM_TOKEN[32] = {
+  0x01u,0x23u,0x45u,0x67u,0x89u,0xABu,0xCDu,0xEFu,
+  0xFEu,0xDCu,0xBAu,0x98u,0x76u,0x54u,0x32u,0x10u,
+  0x01u,0x23u,0x45u,0x67u,0x89u,0xABu,0xCDu,0xEFu,
+  0xFEu,0xDCu,0xBAu,0x98u,0x76u,0x54u,0x32u,0x10u
+};
+static uint8_t g_claim_token[FBSEC_AEAD_KEY_SIZE];
+static bool    g_claim_token_set = false;
+
 /* Demo ownership epoch (must advance past the device's starting epoch). */
 #define DEMO_VOUCHER_EPOCH  2u
+
+const uint8_t *fbsec_commission_claim_token(void) {
+  return g_claim_token_set ? g_claim_token : DEMO_CLAIM_TOKEN;
+}
+
+int fbsec_commission_set_claim_token_hex(const char *hex) {
+  size_t n = 0u;
+  if (fbsec_client_cli_parse_hex(hex, g_claim_token, sizeof g_claim_token, &n) != 0
+      || n != (size_t)FBSEC_AEAD_KEY_SIZE) {
+    return 1;
+  }
+  g_claim_token_set = true;
+  return 0;
+}
 
 int fbsec_commission_verify_genuineness(const fbsec_secure_transport_t *transport,
                                         uint16_t target, uint32_t timeout_ms) {
@@ -143,6 +172,16 @@ int fbsec_commission_present_voucher(const fbsec_secure_transport_t *transport,
   return fbsec_commission_present_voucher_bytes(transport, target, timeout_ms, voucher, n);
 }
 
+int fbsec_commission_get_voucher(uint8_t *out, uint16_t out_size, uint16_t *out_len) {
+  if ((out == NULL) || (out_size < (uint16_t)FBSEC_HO_VOUCHER_LEN)) { return 1; }
+  if (g_voucher_loaded) {
+    memcpy(out, g_voucher, FBSEC_HO_VOUCHER_LEN);
+    if (out_len != NULL) { *out_len = (uint16_t)FBSEC_HO_VOUCHER_LEN; }
+    return 0;
+  }
+  return fbsec_commission_build_voucher(out, out_size, out_len);
+}
+
 /* Read @p path, dropping '#'-to-end-of-line comments, into @p out (a NUL-
    terminated hex string). Returns 0 on success. */
 static int slurp_hex_text(const char *path, char *out, size_t out_size) {
@@ -225,6 +264,68 @@ int fbsec_commission_install_provisioning(const fbsec_secure_transport_t *transp
     return 2;
   }
   return 0;
+}
+
+/* Install one C01Fh key-set rung: send the client's own @p target_slot key,
+   the write AEAD-authorized under @p auth_slot's key. Both slots must already
+   hold key material. Body = selector[1] || keyid[4 LE] || key[KEY_SIZE], with
+   the non-secret C011h id following the demo convention 0x1000 + slot. */
+static int install_key_rung(const fbsec_secure_transport_t *transport,
+                            uint16_t target, uint32_t timeout_ms,
+                            uint8_t target_slot, uint8_t auth_slot) {
+  uint8_t  body[FBSEC_HO_KEY_SET_BODY_LEN];
+  uint32_t keyid_val = 0x1000u + (uint32_t)target_slot;
+
+  /* The value to install is the client's own session key for target_slot. */
+  fbsec_client_keys_set_keyid(target_slot);
+  if (!fbsec_client_keys_session_set()) { return 20; }   /* target key missing */
+  body[0] = target_slot;
+  body[1] = (uint8_t)(keyid_val & 0xFFu);
+  body[2] = (uint8_t)((keyid_val >> 8) & 0xFFu);
+  body[3] = (uint8_t)((keyid_val >> 16) & 0xFFu);
+  body[4] = (uint8_t)((keyid_val >> 24) & 0xFFu);
+  memcpy(&body[5], fbsec_client_keys_session(), FBSEC_AEAD_KEY_SIZE);
+
+  /* Authorize the write under the tier below (the rolling key). */
+  fbsec_client_keys_set_keyid(auth_slot);
+  if (!fbsec_client_keys_session_set()) { return 21; }   /* auth key missing */
+  return fbsec_client_run_secure_write(transport, target, FBSEC_HO_KEY_SET_ID,
+                                       body, (uint16_t)FBSEC_HO_KEY_SET_BODY_LEN,
+                                       timeout_ms);
+}
+
+int fbsec_commission_install_provisioning_by_token(
+    const fbsec_secure_transport_t *transport,
+    uint16_t target, uint32_t timeout_ms) {
+  uint8_t saved_keyid = fbsec_client_keys_keyid();  /* restore the user's choice */
+  int     rc;
+
+  /* Seat the Device Claim Token in its slot so it can authorize the write. */
+  fbsec_client_keys_set_keyid(FBSEC_CLIENT_KEYID_CLAIM_TOKEN);
+  if (!fbsec_client_keys_set_session(fbsec_commission_claim_token())) {
+    fbsec_client_keys_set_keyid(saved_keyid);
+    return 22;
+  }
+  rc = install_key_rung(transport, target, timeout_ms,
+                        FBSEC_CLIENT_KEYID_PROVISIONING,
+                        FBSEC_CLIENT_KEYID_CLAIM_TOKEN);
+  fbsec_client_keys_set_keyid(saved_keyid);
+  return rc;
+}
+
+int fbsec_commission_install_ladder(const fbsec_secure_transport_t *transport,
+                                    uint16_t target, uint32_t timeout_ms) {
+  uint8_t saved_keyid = fbsec_client_keys_keyid();  /* restore the user's choice */
+  int     rc = install_key_rung(transport, target, timeout_ms,
+                                FBSEC_CLIENT_KEYID_INTEGRATOR,
+                                FBSEC_CLIENT_KEYID_PROVISIONING);
+  if (rc == 0) {
+    rc = install_key_rung(transport, target, timeout_ms,
+                          FBSEC_CLIENT_KEYID_OPERATOR,
+                          FBSEC_CLIENT_KEYID_INTEGRATOR);
+  }
+  fbsec_client_keys_set_keyid(saved_keyid);
+  return rc;
 }
 
 int fbsec_commission_generate_ldevid(const fbsec_secure_transport_t *transport,

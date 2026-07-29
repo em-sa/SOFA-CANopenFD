@@ -164,6 +164,12 @@ static uint8_t          g_keys[FBSEC_SOD_KEY_SLOTS + 1u][FBSEC_AEAD_KEY_SIZE];
 static bool             g_key_present[FBSEC_SOD_KEY_SLOTS + 1u];
 static uint32_t         g_key_id_val[FBSEC_SOD_KEY_SLOTS + 1u];
 
+/* Base keyid (1..N) of the most recent SECURE_WO write whose AEAD tag
+   verified. A write_after hook that must know which key authorized the
+   write (e.g. the C01Fh rolling-key install ladder) reads it via
+   fbsec_sod_last_write_key_id(). 0 = no verified write yet. */
+static uint8_t          g_last_write_kid_base;
+
 /* ---- Lifecycle / registry -------------------------------------------- */
 
 void fbsec_sod_init(void) {
@@ -177,7 +183,12 @@ void fbsec_sod_init(void) {
   memset(g_keys,        0, sizeof g_keys);
   memset(g_key_present, 0, sizeof g_key_present);
   memset(g_key_id_val,  0, sizeof g_key_id_val);
-  g_registry_count  = 0u;
+  g_registry_count      = 0u;
+  g_last_write_kid_base = 0u;
+}
+
+uint8_t fbsec_sod_last_write_key_id(void) {
+  return g_last_write_kid_base;
 }
 
 static int find_index(uint32_t data_id) {
@@ -247,6 +258,12 @@ bool fbsec_sod_set_key_ex(uint8_t key_id, const uint8_t key[FBSEC_AEAD_KEY_SIZE]
 bool fbsec_sod_set_key(uint8_t key_id, const uint8_t key[FBSEC_AEAD_KEY_SIZE]) {
   /* Back-compatible: the non-secret key id defaults to the slot number. */
   return fbsec_sod_set_key_ex(key_id, key, (uint32_t)key_id);
+}
+
+void fbsec_sod_clear_keys(void) {
+  memset(g_keys,        0, sizeof g_keys);
+  memset(g_key_present, 0, sizeof g_key_present);
+  memset(g_key_id_val,  0, sizeof g_key_id_val);
 }
 
 bool fbsec_sod_has_key(uint8_t key_id) {
@@ -711,6 +728,10 @@ static fbsec_sod_status_t verify_and_apply_write(
     *out_abort = FBSEC_ABORT_TAG_VERIFY;
     return FBSEC_SOD_ABORT;
   }
+
+  /* Record the key that authorized this verified write, so a write_after
+     hook can enforce a per-key policy (e.g. the C01Fh install ladder). */
+  g_last_write_kid_base = kid_base;
 
   fbsec_abort_t hook_rc = fbsec_sod_port_write_after(entry->data_id,
                                               plaintext, entry->data_len);

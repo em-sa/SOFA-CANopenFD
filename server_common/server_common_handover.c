@@ -110,10 +110,13 @@ static bool handle_ldevid(uint16_t client_dev, const uint8_t *req, uint16_t req_
               reply, (uint16_t)sizeof reply, req, req_len, send_reply, user);
 }
 
-/* Provisioning-Key install: req = key[16] || SIG[64]; reply = ACK / abort.
-   On success the accepted key is bridged into the live secure-OD Provisioning
-   session-key slot (so real sessions use it, not dead storage) and the device
-   advances to Operational. */
+/* Provisioning-Key install (C02Fh, the RPK / voucher path): req = key[16] ||
+   SIG[64]; reply = ACK / abort. On success the accepted key is bridged into
+   the live secure-OD Provisioning session-key slot (so real sessions use it,
+   not dead storage) and the device advances to Owned. The Integrator and
+   Operator keys are NOT installed here: the client walks the real C01Fh
+   ladder (Provisioning installs Integrator, Integrator installs Operator),
+   which is what moves the device on to Operational. */
 static bool handle_provision(uint16_t client_dev, const uint8_t *req, uint16_t req_len,
                              fbsec_send_reply_fn_t send_reply, void *user) {
   bool ok = fbsec_server_asym_install_provisioning(req, req_len);
@@ -123,7 +126,7 @@ static bool handle_provision(uint16_t client_dev, const uint8_t *req, uint16_t r
       (void)fbsec_sod_set_key_ex(FBSEC_DEMO_KEYID_PROVISIONING, pk,
                                  FBSEC_DEMO_KEYID_VALUE_PROVISIONING);
     }
-    fbsec_server_lifecycle_set(FBSEC_STAGE_OPERATIONAL);
+    fbsec_server_lifecycle_set(FBSEC_STAGE_OWNED);
   }
   return emit(client_dev, FBSEC_HO_PROVISION_ID, "HOPK",
               ok ? FBSEC_ABORT_NONE : FBSEC_ABORT_SIG_VERIFY, NULL, 0u,
@@ -158,6 +161,17 @@ static bool handle_epoch(uint16_t client_dev, const uint8_t *req, uint16_t req_l
               req, req_len, send_reply, user);
 }
 #endif /* FBSEC_HANDOVER_AUTHORIZED */
+
+void fbsec_server_handover_decommission(void) {
+  /* Erase session keys and ownership, return to Uncommissioned. The node
+     stays online: only its keys and owner are cleared, so it can be
+     commissioned again. The Device Claim Token is factory material, so it is
+     re-seated after the wipe (the next commission's token path needs it). */
+  fbsec_sod_clear_keys();
+  fbsec_server_install_claim_token();
+  fbsec_server_asym_decommission();
+  fbsec_server_lifecycle_set(FBSEC_STAGE_UNCOMMISSIONED);
+}
 
 bool fbsec_server_handover_try(uint16_t client_dev, uint32_t data_id,
                                const uint8_t *req, uint16_t req_len,

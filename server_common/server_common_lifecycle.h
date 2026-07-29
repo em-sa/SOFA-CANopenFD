@@ -48,7 +48,7 @@ typedef enum {
   FBSEC_STAGE_UNCOMMISSIONED,   /**< discoverable, awaiting an ownership op  */
   FBSEC_STAGE_OWNED,            /**< owner / first Provisioning key set      */
   FBSEC_STAGE_OPERATIONAL,      /**< required keys installed, sessions run   */
-  FBSEC_STAGE_DECOMMISSIONED    /**< factory restore, epoch bumped           */
+  FBSEC_STAGE_DECOMMISSIONED    /**< manufacturer reset, epoch bumped        */
 } fbsec_lifecycle_stage_t;
 
 /**

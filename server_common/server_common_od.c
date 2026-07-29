@@ -15,6 +15,7 @@
 #include "server_common_od.h"
 #include "server_common_hooks.h"
 #include "server_common_keys.h"
+#include "server_common_security.h"
 #include "server_common_const_od.h"
 #include "server_common_lifecycle.h"
 
@@ -96,11 +97,23 @@ int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path,
     .access_flags = FBSEC_SOD_ACCESS_SECURE_WO,
     .data_len     = FBSEC_SERVER_ENTRY_VALUE_LEN
   };
+  /* C01Fh key set: SECURE_WO, any tier key may present a write (the
+     rolling-key ladder is enforced in fbsec_server_apply_key_set). Body =
+     selector[1] || keyid[4] || key[KEY_SIZE]. Not marked CONFIDENTIAL so it
+     also registers in an authenticate-only build; a production device would
+     require an encrypting build and mark it confidential. */
+  fbsec_sod_entry_t e_kset = {
+    .data_id      = FBSEC_SEC_KEY_SET_DATA_ID,
+    .key_id       = FBSEC_SOD_KEY_NONE,
+    .access_flags = FBSEC_SOD_ACCESS_SECURE_WO,
+    .data_len     = (uint16_t)FBSEC_KEY_SET_BODY_LEN
+  };
   /* C018h is registered only when its 1018h identity is loaded. */
   if ((identity_ok && !fbsec_sod_register_entry(&e_sro))
       || !fbsec_sod_register_entry(&e_swo)
       || !fbsec_sod_register_entry(&e_pro)
-      || !fbsec_sod_register_entry(&e_pwo)) {
+      || !fbsec_sod_register_entry(&e_pwo)
+      || !fbsec_sod_register_entry(&e_kset)) {
     fprintf(stderr, "server_common: failed to register secure entries\n");
     return -1;
   }
@@ -116,6 +129,12 @@ int fbsec_server_od_init(uint16_t my_dev, const char *key_file_path,
   if (install_demo_keys) {
     fbsec_server_install_demo_keys_if_unset();
   }
+
+  /* The Device Claim Token is factory material, present from boot on every
+     device (it is what authorizes the first C01Fh ladder rung on the token
+     path). It lives in slot 4, so it never counts toward "has session keys"
+     below. */
+  fbsec_server_install_claim_token();
 
   /* Drive the commissioning stage from whether a session key is present.
      A key ladder or a persisted owner would refine this in later phases;

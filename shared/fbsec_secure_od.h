@@ -156,6 +156,15 @@ bool fbsec_sod_set_key_ex(uint8_t key_id, const uint8_t key[FBSEC_AEAD_KEY_SIZE]
                           uint32_t id_value);
 
 /**
+ * @brief Clear every session-key slot (keys become unset, re-installable).
+ *
+ * Leaves the registered entries and challenge state untouched; only the
+ * key store is wiped. Used by a device decommission / manufacturer reset so
+ * the device can be commissioned again.
+ */
+void fbsec_sod_clear_keys(void);
+
+/**
  * @brief Check whether a key slot has been populated.
  */
 bool fbsec_sod_has_key(uint8_t key_id);
@@ -167,6 +176,18 @@ bool fbsec_sod_has_key(uint8_t key_id);
  *         the slot is empty or @p key_id is out of range.
  */
 uint32_t fbsec_sod_get_key_id_value(uint8_t key_id);
+
+/**
+ * @brief Base keyid (1..N) of the most recent SECURE_WO write whose AEAD
+ *        tag verified; 0 if none yet.
+ *
+ * Lets a write_after hook learn which key authorized the write it is about
+ * to apply, so it can enforce a per-key policy the generic role hook cannot
+ * express (the C01Fh rolling-key install ladder: each installed key
+ * authorizes the next). Valid only for the duration of the write_after
+ * call for that write.
+ */
+uint8_t fbsec_sod_last_write_key_id(void);
 
 /* ---- Dispatch entry points ------------------------------------------- */
 

@@ -14,6 +14,7 @@
 
 #include "server_common_hooks.h"
 #include "server_common_keys.h"
+#include "server_common_security.h"
 #include "server_common_const_od.h"
 
 #include <stdio.h>
@@ -140,11 +141,19 @@ bool fbsec_sod_port_access_allowed(fbsec_sod_op_t op, uint32_t data_id) {
 bool fbsec_sod_port_role_allowed(fbsec_sod_op_t op,
                                  uint8_t        key_id_base,
                                  uint32_t       data_id) {
-  (void)data_id;
   if (op == FBSEC_SOD_OP_READ) {
     return true;
   }
-  /* Write: only Provisioning Session Key and Integrator Session Key. */
+  /* C01Fh key set: the install ladder is authorized by the Claim Token
+     (Provisioning rung), Provisioning (Integrator rung) or Integrator
+     (Operator rung). The exact rung/authorizer pairing is checked in
+     fbsec_server_apply_key_set; here we only admit those three tiers. */
+  if (data_id == FBSEC_SEC_KEY_SET_DATA_ID) {
+    return (key_id_base == FBSEC_DEMO_KEYID_CLAIM_TOKEN)
+        || (key_id_base == FBSEC_DEMO_KEYID_PROVISIONING)
+        || (key_id_base == FBSEC_DEMO_KEYID_INTEGRATOR);
+  }
+  /* Other writable objects: only Provisioning and Integrator Session Keys. */
   return (key_id_base == FBSEC_DEMO_KEYID_PROVISIONING)
       || (key_id_base == FBSEC_DEMO_KEYID_INTEGRATOR);
 }
@@ -216,6 +225,10 @@ fbsec_abort_t fbsec_sod_port_write_after(uint32_t       data_id,
     }
     memcpy(g_value, src, FBSEC_SERVER_ENTRY_VALUE_LEN);
     return FBSEC_ABORT_NONE;
+  }
+  if (data_id == FBSEC_SEC_KEY_SET_DATA_ID) {
+    /* C01Fh key-set install: apply one rung of the rolling-key ladder. */
+    return fbsec_server_apply_key_set(src, len);
   }
 #if FBSEC_FEATURE_ASYM
   if (data_id == FBSEC_SERVER_ENTRY_RPK_WR_DATA_ID) {

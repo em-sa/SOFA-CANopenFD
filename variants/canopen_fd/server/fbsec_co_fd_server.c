@@ -48,8 +48,15 @@
 #include "server_common_dispatch.h"
 #include "server_common_hooks.h"
 #include "server_common_keys.h"
+#include "server_common_lifecycle.h"
 #include "server_common_od.h"
 #include "server_common_trace.h"
+
+#include "fbsec_descriptor.h"
+
+#if FBSEC_FEATURE_ASYM
+#include "server_common_asym.h"
+#endif
 
 #include "fbsec_co_fd_addr.h"
 #include "fbsec_co_fd_carrier.h"
@@ -222,7 +229,8 @@ int main(int argc, char **argv) {
           "    idx 0xC018 (identity) absent: pass --od-file with a 1018h quad\n");
   }
   fprintf(stderr,
-          "    idx 0xC01F sub 0x00  key set (present, NOT_IMPLEMENTED)\n");
+          "    idx 0xC01F sub 0x00  SECURE_WO key set: rolling-key install "
+          "ladder (token->Prov->Integrator->Operator)\n");
 #if FBSEC_FEATURE_ASYM
   fprintf(stderr,
           "  RPK security objects (CiA 720, Ed25519 signed):\n"
@@ -245,6 +253,32 @@ int main(int argc, char **argv) {
           fbsec_sod_has_key(FBSEC_DEMO_KEYID_PROVISIONING) ? "loaded" : "absent",
           fbsec_sod_has_key(FBSEC_DEMO_KEYID_INTEGRATOR)   ? "loaded" : "absent",
           fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR)     ? "loaded" : "absent");
+
+  /* Live commissioning state: how this node presents on the bus right now,
+     and, when uncommissioned, how it can be claimed. */
+  {
+    uint8_t      comm = fbsec_server_lifecycle_commissioning();
+    fbsec_caps_t caps;
+    fbsec_descriptor_build_caps(0u, &caps);
+    fprintf(stderr, "commissioning (C001h:01h): %s\n",
+            (comm == FBSEC_STAT_COMMISSIONED) ? "commissioned / owned"
+                                              : "uncommissioned");
+    fprintf(stderr, "handover gate (C000h:06h):%s%s%s\n",
+            ((caps.handover_model & FBSEC_DESC_HANDOVER_TOFU) != 0u)    ? " TOFU" : "",
+            ((caps.handover_model & FBSEC_DESC_HANDOVER_TOKEN) != 0u)   ? " token" : "",
+            ((caps.handover_model & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) ? " voucher" : "");
+#if FBSEC_FEATURE_ASYM
+    fprintf(stderr, "RPK identity: IDevID %s, owner epoch %lu, %s\n",
+            fbsec_server_asym_idevid_present() ? "present" : "absent",
+            (unsigned long)fbsec_server_asym_owner_epoch(),
+            fbsec_server_asym_is_uncommissioned() ? "not yet claimed" : "owned");
+    if (comm != FBSEC_STAT_COMMISSIONED) {
+      fprintf(stderr,
+              "  -> uncommissioned: from the client, use the L) lifecycle submenu\n"
+              "     to claim ownership (voucher) and install the Provisioning key\n");
+    }
+#endif
+  }
   fbsec_server_trace_print_legend();
 
   if (!SetConsoleCtrlHandler(ctrl_handler, TRUE)) {
@@ -342,7 +376,7 @@ static void print_usage(FILE *f) {
     "    idx 0xC010 sub 0x00  session salt (present, NOT_IMPLEMENTED)\n"
     "    idx 0xC011 sub 0x00  AEAD key ids\n"
     "    idx 0xC018 sub 0x00  SECURE_RO 16 bytes  1018h identity (needs --od-file)\n"
-    "    idx 0xC01F sub 0x00  key set (present, NOT_IMPLEMENTED)\n"
+    "    idx 0xC01F sub 0x00  SECURE_WO key set (rolling-key install ladder)\n"
 #if FBSEC_FEATURE_ASYM
     "  RPK security objects (CiA 720, Ed25519 signed):\n"
     "    idx 0xC020 sub 1..3  ownership: voucher / epoch / LDevID export\n"

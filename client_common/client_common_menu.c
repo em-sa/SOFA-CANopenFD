@@ -172,6 +172,17 @@ static void prompt_key(void) {
   }
 }
 
+/* Select a session key lazily: an AEAD operation needs one, but on an
+   uncommissioned device no key exists until the handover (L) has run, so the
+   choice is deferred out of startup to the first keyed operation. A keyid
+   already fixed on the command line (--keyid / --key) or a --main-key
+   derivation path is left untouched. */
+static void ensure_key_selected(void) {
+  if (fbsec_client_keys_keyid() == 0u && !fbsec_client_keys_main_set()) {
+    prompt_key();
+  }
+}
+
 /**
  * @brief  Prompt the user for our own node id and apply it via @p setter.
  * @param  my_dev_inout  In/out: current node id; updated on a valid entry.
@@ -840,7 +851,7 @@ typedef enum {
   LC_ACT_VOUCHER = 0,   /* claim by voucher, then install the Provisioning key */
   LC_ACT_TOKEN,         /* present the Device Claim Token, then install (Phase 3) */
   LC_ACT_LADDER,        /* install the next ladder key (Phase 3)               */
-  LC_ACT_DECOMMISSION   /* factory restore (Phase 4)                           */
+  LC_ACT_DECOMMISSION   /* manufacturer reset (Phase 4)                        */
 } lifecycle_action_t;
 
 #define LC_ACT_MAX 4u
@@ -854,7 +865,13 @@ static unsigned lifecycle_actions(const lifecycle_state_t *st,
     if ((st->handover & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) { out[n++] = LC_ACT_VOUCHER; }
     if ((st->handover & FBSEC_DESC_HANDOVER_TOKEN)   != 0u) { out[n++] = LC_ACT_TOKEN; }
   } else {
-    out[n++] = LC_ACT_LADDER;
+    /* Offer the key ladder only while a session key is still missing; the
+       demo sets all three at commissioning, so usually only Decommission
+       remains. */
+    uint8_t all = (uint8_t)(FBSEC_STAT_KEY_PROVISIONING
+                          | FBSEC_STAT_KEY_INTEGRATOR
+                          | FBSEC_STAT_KEY_OPERATOR);
+    if ((st->keys & all) != all) { out[n++] = LC_ACT_LADDER; }
     out[n++] = LC_ACT_DECOMMISSION;
   }
   return n;
@@ -865,17 +882,18 @@ static const char *lifecycle_action_label(lifecycle_action_t a) {
     case LC_ACT_VOUCHER:      return "Claim ownership by voucher, then install the Provisioning key";
     case LC_ACT_TOKEN:        return "Present the Device Claim Token and install the Provisioning key";
     case LC_ACT_LADDER:       return "Install the next key in the ladder (Integrator, Operator)";
-    case LC_ACT_DECOMMISSION: return "Decommission / factory restore";
+    case LC_ACT_DECOMMISSION: return "Decommission / manufacturer reset";
     default:                  return "?";
   }
 }
 
 /* Print the state banner and the numbered action list. */
-static void lifecycle_print(const lifecycle_state_t *st,
+static void lifecycle_print(const lifecycle_state_t *st, uint16_t target,
                             const lifecycle_action_t *acts, unsigned n) {
   unsigned i;
 
-  printf("=== lifecycle / commissioning ===\n");
+  printf("=== lifecycle / commissioning  (target 0x%02X) ===\n",
+         (unsigned)(target & 0xFFu));
   if (!st->ok) {
     printf("  could not read C001h status from the target\n");
     return;
@@ -889,13 +907,20 @@ static void lifecycle_print(const lifecycle_state_t *st,
          ((st->keys & FBSEC_STAT_KEY_PROVISIONING) != 0u) ? " Provisioning" : "",
          ((st->keys & FBSEC_STAT_KEY_INTEGRATOR)   != 0u) ? " Integrator"   : "",
          ((st->keys & FBSEC_STAT_KEY_OPERATOR)     != 0u) ? " Operator"     : "");
-  {
+  /* The gate is one-time: it is the way in to claim ownership. Once the
+     device is claimed it is closed, regardless of what C000h:06h still
+     advertises as a capability. */
+  if (st->commissioning == FBSEC_STAT_COMMISSIONED) {
+    printf("  gate:   closed (device already claimed)\n");
+  } else {
     bool voucher = (st->handover & FBSEC_DESC_HANDOVER_VOUCHER) != 0u;
     bool token   = (st->handover & FBSEC_DESC_HANDOVER_TOKEN)   != 0u;
-    printf("  gates:  %s%s%s\n",
-           (!voucher && !token) ? "none advertised" : "",
-           voucher ? "voucher " : "",
-           token   ? "token"    : "");
+    bool tofu    = (st->handover & FBSEC_DESC_HANDOVER_TOFU)    != 0u;
+    printf("  gate:   open ->%s%s%s%s\n",
+           (!voucher && !token && !tofu) ? " none advertised" : "",
+           voucher ? " voucher" : "",
+           token   ? " token"   : "",
+           tofu    ? " TOFU"    : "");
   }
   printf("  ------------------------------\n");
 
@@ -913,38 +938,108 @@ static void lifecycle_print(const lifecycle_state_t *st,
   printf("  Q) Back\n");
 }
 
+#if FBSEC_FEATURE_ASYM
+/* Print @p n bytes as indented hex, 16 per line, for the step narration. */
+static void lifecycle_dump_hex(const uint8_t *p, uint16_t n) {
+  uint16_t i;
+  for (i = 0u; i < n; ++i) {
+    if ((i % 16u) == 0u) { printf("    "); }
+    printf("%02X%s", p[i], (((i + 1u) % 16u) == 0u || (i + 1u) == n) ? "\n" : " ");
+  }
+}
+
+/* Walk the C01Fh ladder (Integrator under Provisioning, Operator under
+   Integrator), narrating each rung, then report the outcome. */
+static void lifecycle_run_ladder(const fbsec_secure_transport_t *transport,
+                                 uint16_t target, uint32_t timeout_ms) {
+  int rc;
+  printf("  -> C01Fh      install Integrator key     [under Provisioning key]\n");
+  printf("  -> C01Fh      install Operator key       [under Integrator key]\n");
+  rc = fbsec_commission_install_ladder(transport, target, timeout_ms);
+  if (rc != 0) {
+    printf("  key ladder failed (rc=%d)\n", rc);
+  } else {
+    printf("     all session keys set; device Operational\n");
+  }
+}
+#endif
+
 /* Perform one selected transition. Returns true if the caller should re-read
    state (an action ran, wired or not). */
 static bool lifecycle_do_action(lifecycle_action_t a,
                                 const fbsec_secure_transport_t *transport,
                                 uint16_t target, uint32_t timeout_ms) {
+#if !FBSEC_FEATURE_ASYM
+  (void)transport; (void)target; (void)timeout_ms;
+#endif
   switch (a) {
-#if FBSEC_FEATURE_ASYM && FBSEC_HANDOVER_AUTHORIZED
+#if FBSEC_FEATURE_ASYM
+#if FBSEC_HANDOVER_AUTHORIZED
     case LC_ACT_VOUCHER: {
-      int rc = fbsec_commission_present_voucher(transport, target, timeout_ms);
+      uint8_t  vbuf[FBSEC_HO_VOUCHER_LEN];
+      uint16_t vlen = 0u;
+      int      rc;
+      if (fbsec_commission_get_voucher(vbuf, (uint16_t)sizeof vbuf, &vlen) == 0) {
+        printf("  loading ownership voucher (%u bytes):\n", (unsigned)vlen);
+        lifecycle_dump_hex(vbuf, vlen);
+      }
+      printf("  -> C020h:01h  present voucher (ownership claim)\n");
+      rc = fbsec_commission_present_voucher(transport, target, timeout_ms);
       if (rc != 0) {
         printf("  voucher claim rejected (rc=%d); device not owned\n", rc);
         return true;
       }
-      printf("  ownership claimed\n");
+      printf("     ownership claimed (Owned)\n");
+      printf("  -> C02Fh      install Provisioning key   [Ed25519-signed]\n");
       rc = fbsec_commission_install_provisioning(transport, target, timeout_ms);
       if (rc != 0) {
         printf("  Provisioning-key install failed (rc=%d)\n", rc);
         return true;
       }
-      printf("  Provisioning key installed; the device is now operational\n");
+      printf("     Provisioning key installed\n");
+      lifecycle_run_ladder(transport, target, timeout_ms);
       return true;
     }
 #endif
-    case LC_ACT_TOKEN:
-      printf("  the token gate is not implemented in this build yet\n");
-      return false;
+    case LC_ACT_TOKEN: {
+      int rc;
+      printf("  loading Device Claim Token (%u bytes):\n",
+             (unsigned)FBSEC_AEAD_KEY_SIZE);
+      lifecycle_dump_hex(fbsec_commission_claim_token(),
+                         (uint16_t)FBSEC_AEAD_KEY_SIZE);
+      printf("  -> C01Fh      install Provisioning key   [under Device Claim Token]\n");
+      rc = fbsec_commission_install_provisioning_by_token(transport, target,
+                                                          timeout_ms);
+      if (rc != 0) {
+        printf("  token claim / Provisioning install failed (rc=%d)\n", rc);
+        return true;
+      }
+      printf("     ownership claimed; Provisioning key installed\n");
+      lifecycle_run_ladder(transport, target, timeout_ms);
+      return true;
+    }
     case LC_ACT_LADDER:
-      printf("  the Integrator/Operator key ladder is not implemented yet\n");
-      return false;
+      lifecycle_run_ladder(transport, target, timeout_ms);
+      return true;
+    case LC_ACT_DECOMMISSION: {
+      int rc = fbsec_rpk_command(transport, target,
+                                 FBSEC_HO_CMD_FACTORY_RESTORE, timeout_ms);
+      if (rc == 0) {
+        printf("  device decommissioned: keys erased, ready to commission "
+               "again\n");
+      } else {
+        printf("  decommission failed (rc=%d)\n", rc);
+      }
+      return true;
+    }
+#else
+    case LC_ACT_VOUCHER:
+    case LC_ACT_TOKEN:
+    case LC_ACT_LADDER:
     case LC_ACT_DECOMMISSION:
-      printf("  decommission / factory restore is not implemented yet\n");
+      printf("  lifecycle actions need the RPK (asymmetric) feature\n");
       return false;
+#endif
     default:
       printf("  this transition is not wired in this build yet\n");
       return false;
@@ -963,7 +1058,7 @@ static void lifecycle_submenu(const fbsec_secure_transport_t *transport,
     lifecycle_action_t acts[LC_ACT_MAX];
     unsigned           n = st.ok ? lifecycle_actions(&st, acts) : 0u;
 
-    lifecycle_print(&st, acts, n);
+    lifecycle_print(&st, target, acts, n);
 
     printf("Lifecycle choice: ");
     fflush(stdout);
@@ -1010,9 +1105,9 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
 
   prompt_encryption();
 
-  if (!fbsec_client_keys_session_set() && !fbsec_client_keys_main_set()) {
-    prompt_key();
-  }
+  /* The session-key choice is deferred to the first AEAD operation (see
+     ensure_key_selected): an uncommissioned device has no key to use until
+     the handover has installed one. */
 
   uint16_t wr_counter  = 0u;
   uint32_t bin_counter = 1u;
@@ -1085,6 +1180,10 @@ int fbsec_client_run_menu(const fbsec_secure_transport_t *transport,
       continue;
     }
     fbsec_client_trace_print_legend();
+    if ((c >= '1') && (c <= '6')) {
+      /* AEAD ops need a session key; pick one now if none is selected yet. */
+      ensure_key_selected();
+    }
     if (strcmp(line, "1") == 0) {
       uint8_t buf[FBSEC_AEAD_MAX_PROTECTED];
       (void)fbsec_client_run_secure_read(transport, target, MENU_ID_DATA_ID,

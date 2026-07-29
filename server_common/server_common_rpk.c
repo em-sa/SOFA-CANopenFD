@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "server_common_asym.h"
+#include "server_common_handover.h"
 #include "server_common_trace.h"
 #include "fbsec_asym.h"
 #include "fbsec_secure_od.h"
@@ -350,9 +351,16 @@ static bool handle_command(uint16_t client_dev, const uint8_t *req,
   }
   code = (uint32_t)code_bytes[0] | ((uint32_t)code_bytes[1] << 8)
        | ((uint32_t)code_bytes[2] << 16) | ((uint32_t)code_bytes[3] << 24);
-  /* This pass only demonstrates that a signed command reached the
-     application; a later pass gives commands real effects. */
-  printf("  C049h function command 0x%08lX received\n", (unsigned long)code);
+  if (code == FBSEC_HO_CMD_FACTORY_RESTORE) {
+    /* Decommission: erase keys and ownership, return to Uncommissioned. The
+       node stays online and can be commissioned again. */
+    fbsec_server_handover_decommission();
+    printf("  C049h manufacturer reset: device decommissioned (keys erased)\n");
+  } else {
+    /* Other codes only demonstrate that a signed command reached the
+       application; a later pass gives them real effects. */
+    printf("  C049h function command 0x%08lX received\n", (unsigned long)code);
+  }
   return emit(client_dev, FBSEC_RPK_FUNCCMD_ID, "C49C", FBSEC_ABORT_NONE,
               NULL, 0u, req, req_len, send_reply, user);
 }

@@ -129,6 +129,19 @@ bool fbsec_server_asym_install_provisioning(const uint8_t *payload, uint16_t len
  */
 const uint8_t *fbsec_server_asym_provisioning_key(void);
 
+/**
+ * @brief Decommission: clear ownership so the device can be claimed again.
+ *
+ * Clears the owner, the installed Provisioning key and the LDevID, and marks
+ * the device uncommissioned. Keeps the factory IDevID, the manufacturer
+ * anchor and the peer table (so genuineness and signed access still work).
+ *
+ * Demo note: the owner epoch is reset to its starting value so the same demo
+ * voucher can re-claim the device. A production device keeps the monotonic
+ * epoch (rollback protection) and would require a fresh, higher-epoch voucher.
+ */
+void fbsec_server_asym_decommission(void);
+
 /* ---- Peer LDevID table (signed-FBsec verification) -------------------- */
 
 /**

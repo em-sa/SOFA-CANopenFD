@@ -27,12 +27,14 @@ echo Starting CANopen FD server  node=%NODE%  bus=127.0.0.1:%PORT%
 echo (Press Ctrl+C to stop.)
 echo.
 rem ---------------------------------------------------------------------------
-rem  --demo-keys fills the session-key slots with the built-in demo keys, so
-rem  the device boots Operational and the secure read/write menu works out of
-rem  the box. Demo-key install is now opt-in: with no --demo-keys and no
-rem  --key-file the device boots Uncommissioned (new-from-manufacturer), and
-rem  the client's L) lifecycle submenu shows the commissioning state. To try
-rem  that, drop --demo-keys from the line below.
+rem  This is the OPERATIONAL / quick secure-ops demo: --demo-keys fills the
+rem  session-key slots with the built-in demo keys, so the device boots
+rem  Operational (already commissioned) and the secure read/write menu works
+rem  out of the box.
+rem
+rem  For the RPK handover / commissioning-lifecycle demo (device boots
+rem  Uncommissioned, claimed over the bus), use start_fd_server_handover.bat
+rem  with start_fd_client_handover.bat instead.
 rem ---------------------------------------------------------------------------
 ..\build\variants\canopen_fd\server\Release\fbsec_co_fd_server.exe --bus 127.0.0.1:%PORT% --node %NODE% --demo-keys --od-file "%~dp0sofa-od-demo.txt"
 

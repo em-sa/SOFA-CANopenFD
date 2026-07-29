@@ -73,6 +73,7 @@ void fbsec_descriptor_build_caps(uint8_t live_id_flags, fbsec_caps_t *out)
    * supplies it from the asym store so an LDevID export shows up at once. */
   out->id_flags       = live_id_flags;
   out->handover_model = FBSEC_DESC_HANDOVER_TOFU
+                      | FBSEC_DESC_HANDOVER_TOKEN
 #if FBSEC_HANDOVER_AUTHORIZED
                       | FBSEC_DESC_HANDOVER_VOUCHER
 #endif

@@ -77,9 +77,53 @@ int fbsec_commission_load_voucher_file(const char *path);
 int fbsec_commission_emit_voucher_file(const char *path);
 #endif
 
-/** Handover step 3 (both models): install the Provisioning Key (signed). */
+/** Handover step 3, RPK / voucher path: install the Provisioning Key over
+ *  C02Fh (Ed25519-signed bootstrap). */
 int fbsec_commission_install_provisioning(const fbsec_secure_transport_t *transport,
                                           uint16_t target, uint32_t timeout_ms);
+
+/**
+ * @brief Handover step 3, token (C0) path: install the Provisioning Key over
+ *        C01Fh, the write authorized (AEAD) by the Device Claim Token.
+ *
+ * The token is the demo default unless overridden via
+ * @ref fbsec_commission_set_claim_token_hex. The Provisioning key value sent
+ * is the client's own slot-1 session key, so the device stores exactly what
+ * the client will use next.
+ *
+ * @retval 0 installed; nonzero on missing key material or transport failure.
+ */
+int fbsec_commission_install_provisioning_by_token(
+    const fbsec_secure_transport_t *transport,
+    uint16_t target, uint32_t timeout_ms);
+
+/**
+ * @brief Handover step 3b (both paths): walk the C01Fh key ladder, installing
+ *        the Integrator key (authorized by the Provisioning key) and then the
+ *        Operator key (authorized by the Integrator key).
+ *
+ * @retval 0 both rungs installed; nonzero on the first failure.
+ */
+int fbsec_commission_install_ladder(const fbsec_secure_transport_t *transport,
+                                    uint16_t target, uint32_t timeout_ms);
+
+/**
+ * @brief Override the Device Claim Token from a hex string (--claim-token).
+ *        Must be exactly FBSEC_AEAD_KEY_SIZE bytes.
+ * @retval 0 accepted; nonzero on parse error or wrong length.
+ */
+int fbsec_commission_set_claim_token_hex(const char *hex);
+
+/** Read-only view of the active Device Claim Token (FBSEC_AEAD_KEY_SIZE bytes),
+ *  for display. */
+const uint8_t *fbsec_commission_claim_token(void);
+
+/**
+ * @brief Copy the voucher that present_voucher would send (loaded relay or
+ *        freshly built demo voucher) into @p out, for display.
+ * @retval 0 on success; nonzero on bad buffer or build failure.
+ */
+int fbsec_commission_get_voucher(uint8_t *out, uint16_t out_size, uint16_t *out_len);
 
 /** Handover step 4 (both models): generate the LDevID and record its public
  *  key (may be NULL). */

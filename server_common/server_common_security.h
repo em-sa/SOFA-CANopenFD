@@ -17,8 +17,11 @@
  *   - C011h AEAD key identifiers. Fully implemented, read-only and
  *     unsecured: sub 00h is the slot count, subs 01h.. are the per-slot
  *     non-secret U32 key ids from the key store.
- *   - C01Fh Key set. Present but over-the-bus key install is not
- *     implemented this pass: a write returns C9h NOT_IMPLEMENTED.
+ *
+ * C01Fh Key set is NO LONGER served here: it is a real SECURE_WO entry in
+ * the fbsec_sod registry (see server_common_od.c) so it reuses the AEAD
+ * challenge / verify path. The rolling-key install ladder it drives is
+ * applied by fbsec_server_apply_key_set (server_common_keys.c).
  *
  * Copyright (c) 2026 Embedded Systems Academy.
  * Licensed under the Apache License, Version 2.0
@@ -42,8 +45,12 @@ extern "C" {
 #define FBSEC_SEC_INDEX_KEY_IDS       0xC011u
 #define FBSEC_SEC_INDEX_KEY_SET       0xC01Fu
 
+/* C01Fh key-set object data id ((index << 16) | sub 00h). Served by the
+   fbsec_sod registry as a SECURE_WO entry, not by this handler. */
+#define FBSEC_SEC_KEY_SET_DATA_ID     ((uint32_t)FBSEC_SEC_INDEX_KEY_SET << 16)
+
 /**
- * @brief Try to serve a request targeting a C010h/C011h/C01Fh object.
+ * @brief Try to serve a request targeting a C010h/C011h object.
  *
  * @param src_dev      requester's device id.
  * @param data_id      requested data id ((index << 16) | (sub << 8)).

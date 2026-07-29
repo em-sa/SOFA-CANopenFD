@@ -655,6 +655,15 @@ static int parse_args(int argc, char **argv,
       g_cfg.voucher_path = argv[i + 1];
       i += 2;
 #endif
+#if FBSEC_FEATURE_ASYM
+    } else if (strcmp(a, "--claim-token") == 0 && (i + 1) < argc) {
+      if (fbsec_commission_set_claim_token_hex(argv[i + 1]) != 0) {
+        fprintf(stderr, EXEC_NAME ": --claim-token must be %u hex bytes\n",
+                (unsigned)FBSEC_AEAD_KEY_SIZE);
+        return 1;
+      }
+      i += 2;
+#endif
     } else {
       fprintf(stderr, EXEC_NAME ": unknown option '%s'\n", a);
       print_usage(stderr);
@@ -763,6 +772,10 @@ static void print_usage(FILE *f) {
     "                      submenu instead of self-signing the demo one\n"
     "  --emit-voucher FILE write the demo ownership voucher to FILE and exit\n"
     "                      (the offline manufacturer/MASA step)\n"
+#endif
+#if FBSEC_FEATURE_ASYM
+    "  --claim-token HEX   Device Claim Token for the token (C0) lifecycle\n"
+    "                      path; defaults to the demo token when omitted\n"
 #endif
     "  --help              print this and exit 0\n"
     "\n"

@@ -89,6 +89,14 @@ extern "C" {
 #define FBSEC_HO_EPOCH_ID      0xC0200200u  /* C020h:02 owner epoch RO U32     */
 #define FBSEC_HO_PROVISION_ID  0xC02F0000u  /* C02Fh:00 provisioning install   */
 #define FBSEC_HO_LDEVID_ID     0xC0200300u  /* C020h:03 LDevID generate/export */
+#define FBSEC_HO_KEY_SET_ID    0xC01F0000u  /* C01Fh:00 key-set install ladder */
+
+/** C01Fh key-set write body: selector[1] || keyid[4 LE] || key[KEY_SIZE].
+ *  The selector is the target slot (1 Provisioning, 2 Integrator,
+ *  3 Operator). The AEAD tag proves possession of the authorizing key
+ *  (Claim Token -> Provisioning -> Integrator -> Operator ladder). */
+#define FBSEC_HO_KEY_SET_BODY_LEN \
+  ((uint16_t)(1u + 4u + FBSEC_AEAD_KEY_SIZE))
 
 /** Freshness nonce the tool sends on an identity read. */
 #define FBSEC_HO_RT_LEN        16u
@@ -108,6 +116,9 @@ extern "C" {
 /** LDevID export reply: ldevid_pub[32] || SIG_DEV(pub)[64]. */
 #define FBSEC_HO_LDEVID_REPLY_LEN \
   ((uint16_t)(FBSEC_ASYM_PUBKEY_SIZE + FBSEC_ASYM_SIG_SIZE))
+
+/** C049h secure function-command codes (signed by the owner/integrator). */
+#define FBSEC_HO_CMD_FACTORY_RESTORE  0x00000010u  /* decommission: erase keys */
 
 /* ---- RPK secure objects (CiA 720 C021h/C022h/C042h/C049h) ------------ */
 /* Unauthenticated public-key reads plus the signed generic-access and

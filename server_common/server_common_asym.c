@@ -218,6 +218,20 @@ const uint8_t *fbsec_server_asym_provisioning_key(void)
   return g_st.provisioning_set ? g_st.provisioning_key : NULL;
 }
 
+void fbsec_server_asym_decommission(void)
+{
+  /* Clear ownership + installed material; keep identity, anchor and peers. */
+  memset(&g_st.owner, 0, sizeof g_st.owner);
+  g_st.owner_set = false;
+  memset(g_st.provisioning_key, 0, sizeof g_st.provisioning_key);
+  g_st.provisioning_set = false;
+  memset(&g_st.ldevid, 0, sizeof g_st.ldevid);
+  g_st.ldevid_present = false;
+  /* Demo: reset the epoch so the same demo voucher re-claims the device. */
+  g_st.owner_epoch    = (uint32_t)FBSEC_DEMO_OWNER_EPOCH_START;
+  g_st.uncommissioned = true;
+}
+
 bool fbsec_server_asym_set_peer(uint8_t slot, const fbsec_pubkey_t *pk)
 {
   if ((slot == 0u) || (slot > FBSEC_SERVER_ASYM_PEER_SLOTS) || (pk == NULL))

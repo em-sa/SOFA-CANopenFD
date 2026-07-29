@@ -36,10 +36,22 @@ extern "C" {
 #define FBSEC_CLIENT_KEYID_PROVISIONING 1u
 #define FBSEC_CLIENT_KEYID_INTEGRATOR   2u
 #define FBSEC_CLIENT_KEYID_OPERATOR     3u
+#define FBSEC_CLIENT_KEYID_CLAIM_TOKEN  4u   /* slot for the Device Claim Token */
 
 /* ---- Setters --------------------------------------------------------- */
 
 bool fbsec_client_keys_set_session_from_hex(const char *hex);
+
+/**
+ * @brief Install FBSEC_AEAD_KEY_SIZE key bytes into the currently-selected
+ *        keyid slot (set via @ref fbsec_client_keys_set_keyid first).
+ *
+ * Byte-buffer counterpart to @ref fbsec_client_keys_set_session_from_hex,
+ * used by the commissioning ladder to seat the Device Claim Token.
+ *
+ * @retval true  installed; false if no keyid is selected.
+ */
+bool fbsec_client_keys_set_session(const uint8_t *key);
 bool fbsec_client_keys_set_main_from_hex(const char *hex);
 bool fbsec_client_keys_set_salt_from_hex(const char *hex);
 void fbsec_client_keys_set_keyid(uint8_t key_id);

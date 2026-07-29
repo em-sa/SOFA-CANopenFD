@@ -160,6 +160,15 @@ bool fbsec_client_keys_set_session_from_hex(const char *hex) {
   return true;
 }
 
+bool fbsec_client_keys_set_session(const uint8_t *key) {
+  if (g_key_id == 0u || g_key_id > FBSEC_AEAD_KEYID_MAX || key == NULL) {
+    return false;
+  }
+  memcpy(g_session_keys[g_key_id], key, FBSEC_AEAD_KEY_SIZE);
+  g_session_key_loaded[g_key_id] = true;
+  return true;
+}
+
 bool fbsec_client_keys_set_main_from_hex(const char *hex) {
   size_t klen = 0;
   if (parse_hex_to_buf(hex, g_main_key, sizeof g_main_key, &klen) != 0

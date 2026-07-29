@@ -53,6 +53,13 @@ bool fbsec_server_handover_try(uint16_t client_dev, uint32_t data_id,
                                const uint8_t *req, uint16_t req_len,
                                fbsec_send_reply_fn_t send_reply, void *user);
 
+/**
+ * @brief Decommission the device: erase session keys and ownership and return
+ *        to Uncommissioned, keeping the node online so it can be claimed again.
+ *        Invoked by the C049h manufacturer-reset function command.
+ */
+void fbsec_server_handover_decommission(void);
+
 #ifdef __cplusplus
 }
 #endif

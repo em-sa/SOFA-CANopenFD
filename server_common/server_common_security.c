@@ -98,26 +98,6 @@ static void serve_session_salt(uint16_t src_dev, uint32_t data_id, uint8_t sub,
         FBSEC_ABORT_NO_SUBINDEX, payload, payload_len, NULL, 0u);
 }
 
-/* C01Fh key set: a single write-only slot. Over-the-bus key install is
-   not implemented this pass, so a write returns NOT_IMPLEMENTED and a
-   read is refused as write-only. */
-static void serve_key_set(uint16_t src_dev, uint32_t data_id, uint8_t sub,
-                          const uint8_t *payload, uint16_t payload_len,
-                          fbsec_send_reply_fn_t send_reply, void *user) {
-  if (sub != 0x00u) {
-    serve(send_reply, user, src_dev, data_id, "C01F",
-          FBSEC_ABORT_NO_SUBINDEX, payload, payload_len, NULL, 0u);
-    return;
-  }
-  if (payload_len != 0u) {                  /* the key-install write: not built */
-    serve(send_reply, user, src_dev, data_id, "C01F",
-          FBSEC_ABORT_NOT_IMPLEMENTED, payload, payload_len, NULL, 0u);
-  } else {
-    serve(send_reply, user, src_dev, data_id, "C01F",
-          FBSEC_ABORT_WRITE_ONLY, payload, payload_len, NULL, 0u);
-  }
-}
-
 bool fbsec_server_security_try(uint16_t src_dev, uint32_t data_id,
                                const uint8_t *payload, uint16_t payload_len,
                                fbsec_send_reply_fn_t send_reply, void *user) {
@@ -138,10 +118,8 @@ bool fbsec_server_security_try(uint16_t src_dev, uint32_t data_id,
       serve_session_salt(src_dev, data_id, sub, payload, payload_len,
                          send_reply, user);
       return true;
-    case FBSEC_SEC_INDEX_KEY_SET:
-      serve_key_set(src_dev, data_id, sub, payload, payload_len,
-                    send_reply, user);
-      return true;
+    /* C01Fh (FBSEC_SEC_INDEX_KEY_SET) is intentionally NOT handled here:
+       it falls through to the fbsec_sod registry as a SECURE_WO entry. */
     default:
       return false;
   }

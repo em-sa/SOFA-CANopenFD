@@ -233,7 +233,8 @@ void fbsec_server_dispatch_request(uint16_t            src_dev,
   }
 
   /* CiA 720 AEAD-block security objects handled outside the registry
-     (C010h session salt, C011h key ids, C01Fh key set). */
+     (C010h session salt, C011h key ids). C01Fh key set is a SECURE_WO
+     registry entry, so it flows through fbsec_sod_dispatch below. */
   if (fbsec_server_security_try(src_dev, data_id, payload, payload_len,
                                 send_reply, user)) {
     return;
