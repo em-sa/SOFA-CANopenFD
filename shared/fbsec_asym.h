@@ -51,25 +51,30 @@ extern "C" {
 /** Asymmetric algorithm id published in the capability descriptor. */
 #define FBSEC_ASYM_ALG_ED25519   0x01u
 
-/* ---- Signature transcript domain separation (spec 11.6.4) ------------ */
+/* ---- Signature transcript construction (CiA 720-1 Table 6) ----------- */
+/* transcript = domain || 00h || algorithm || role || body. The domain
+ * separator embeds the transcript version (v1) as its final element. */
 
-/** Transcript version byte, prepended before role_dir and body. */
-#define FBSEC_ASYM_TRANSCRIPT_VERSION   0x01u
+/** Domain separator: an ASCII constant of CiA 720-1, followed by a 00h byte. */
+#define FBSEC_ASYM_DOMAIN           "CANopen-Security-v1"
+#define FBSEC_ASYM_DOMAIN_LEN       19u
 
-/** role_dir values: one per signed exchange, so a signature minted for
- *  one role can never verify in another. See spec section 11.6.4. */
-#define FBSEC_ASYM_RD_IDENTITY_READ     0x01u /* genuineness proof (IDevID)   */
-#define FBSEC_ASYM_RD_PKINSTALL_ACK     0x02u /* provisioning-key install ack */
-#define FBSEC_ASYM_RD_LDEVID_EXPORT     0x03u /* IDevID signs new LDevID pub  */
-/* 0x04, 0x05 reserved (were signed-FBsec c2s/s2c, removed). */
-#define FBSEC_ASYM_RD_VOUCHER           0x06u /* ownership voucher (mfg anchor)*/
-#define FBSEC_ASYM_RD_IDEVID_CERT       0x07u /* manufacturer cert over IDevID */
-#define FBSEC_ASYM_RD_GENERIC_READ      0x08u /* C042h signed read (dev signs) */
-#define FBSEC_ASYM_RD_GENERIC_WRITE     0x09u /* C042h signed write (cli signs)*/
-#define FBSEC_ASYM_RD_FUNCTION_CMD      0x0Au /* C049h signed command (cli)    */
+/** Signature algorithm identifier in the transcript (CiA 720-1 Table 5). */
+#define FBSEC_ASYM_SIG_ALG_ED25519  0x30u
 
-/** Fixed transcript overhead (version byte + role_dir byte). */
-#define FBSEC_ASYM_TRANSCRIPT_OVERHEAD  2u
+/** role values from the CiA 720-1 Table 7 role registry: one per signed
+ *  exchange, so a signature minted for one role never verifies in another. */
+#define FBSEC_ASYM_RD_IDENTITY_READ     0x01u /* Device identity read (720-2)      */
+#define FBSEC_ASYM_RD_PKINSTALL_ACK     0x02u /* Provisioning key install ack      */
+#define FBSEC_ASYM_RD_LDEVID_EXPORT     0x03u /* Operational identity key export   */
+#define FBSEC_ASYM_RD_GENERIC_WRITE     0x04u /* Signed data access, client->server*/
+#define FBSEC_ASYM_RD_GENERIC_READ      0x05u /* Signed data access, server->client*/
+#define FBSEC_ASYM_RD_VOUCHER           0x06u /* Ownership voucher (mfg anchor)     */
+#define FBSEC_ASYM_RD_IDEVID_CERT       0x07u /* Device identity attestation       */
+#define FBSEC_ASYM_RD_FUNCTION_CMD      0x09u /* Secure function command auth       */
+
+/** Fixed transcript overhead: domain || 00h || algorithm || role. */
+#define FBSEC_ASYM_TRANSCRIPT_OVERHEAD  (FBSEC_ASYM_DOMAIN_LEN + 3u)
 
 /* ---- SOFA identity-blob layout (handover identity read) -------------- */
 

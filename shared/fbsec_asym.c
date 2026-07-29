@@ -75,6 +75,7 @@ uint16_t fbsec_asym_transcript(uint8_t role_dir,
                                uint8_t *out, uint16_t out_max)
 {
   uint16_t total;
+  uint16_t o;
 
   if ((out == NULL) || ((body == NULL) && (body_len != 0u)))
   {
@@ -87,11 +88,15 @@ uint16_t fbsec_asym_transcript(uint8_t role_dir,
     return 0u;
   }
 
-  out[0] = FBSEC_ASYM_TRANSCRIPT_VERSION;
-  out[1] = role_dir;
+  /* domain || 00h || algorithm || role || body (CiA 720-1 Table 6). */
+  memcpy(out, FBSEC_ASYM_DOMAIN, FBSEC_ASYM_DOMAIN_LEN);
+  o = FBSEC_ASYM_DOMAIN_LEN;
+  out[o++] = 0x00u;
+  out[o++] = FBSEC_ASYM_SIG_ALG_ED25519;
+  out[o++] = role_dir;
   if (body_len != 0u)
   {
-    memcpy(&out[FBSEC_ASYM_TRANSCRIPT_OVERHEAD], body, body_len);
+    memcpy(&out[o], body, body_len);
   }
 
   return total;
