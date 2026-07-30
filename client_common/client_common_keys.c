@@ -59,9 +59,9 @@ static uint16_t g_observed_salt_len = 0u;
  */
 static const char *demo_role_label(uint8_t keyid) {
   switch (keyid) {
-    case FBSEC_CLIENT_KEYID_PROVISIONING: return "Provisioning Session Key";
-    case FBSEC_CLIENT_KEYID_INTEGRATOR:   return "Integrator Session Key";
-    case FBSEC_CLIENT_KEYID_OPERATOR:     return "Operator Session Key";
+    case FBSEC_CLIENT_KEYID_PROVISIONING: return "Provisioning Key";
+    case FBSEC_CLIENT_KEYID_INTEGRATOR:   return "Integrator Key";
+    case FBSEC_CLIENT_KEYID_OPERATOR:     return "Operator Key";
     default:                              return NULL;
   }
 }

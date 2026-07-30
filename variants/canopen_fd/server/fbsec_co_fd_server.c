@@ -135,6 +135,96 @@ static int  send_reply_cb(void *user, uint16_t to_dev, uint32_t data_id,
                           fbsec_abort_t status, const uint8_t *data,
                           uint16_t data_len);
 
+/* ---- Live security-state console lines --------------------------------- */
+
+/**
+ * @brief Bitmask of which demo base-key slots are currently populated.
+ *
+ * Sampled before and after a dispatched request so a commissioning step that
+ * assigns a new key can be detected and the key-store line reprinted.
+ *
+ * @return b0 Provisioning, b1 Integrator, b2 Operator.
+ */
+static uint8_t server_key_mask(void) {
+  uint8_t m = 0u;
+  if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_PROVISIONING)) { m |= 0x01u; }
+  if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_INTEGRATOR))   { m |= 0x02u; }
+  if (fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR))     { m |= 0x04u; }
+  return m;
+}
+
+/**
+ * @brief One-line key-store summary: which base keys are loaded.
+ */
+static void print_key_store(void) {
+  fprintf(stderr,
+          "key store: Provisioning Key %s, Integrator Key %s, Operator Key %s\n",
+          fbsec_sod_has_key(FBSEC_DEMO_KEYID_PROVISIONING) ? "loaded" : "absent",
+          fbsec_sod_has_key(FBSEC_DEMO_KEYID_INTEGRATOR)   ? "loaded" : "absent",
+          fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR)     ? "loaded" : "absent");
+}
+
+/**
+ * @brief Live commissioning state (C001h:01h).
+ */
+static void print_commissioning(void) {
+  uint8_t comm = fbsec_server_lifecycle_commissioning();
+  fprintf(stderr, "commissioning (C001h:01h): %s\n",
+          (comm == FBSEC_STAT_COMMISSIONED) ? "commissioned / owned"
+                                            : "uncommissioned");
+}
+
+/**
+ * @brief Handover gate offered by C000h:06h, TOFU listed first.
+ */
+static void print_handover_gate(void) {
+  fbsec_caps_t caps;
+  fbsec_descriptor_build_caps(0u, &caps);
+  fprintf(stderr, "handover gate (C000h:06h):%s%s%s\n",
+          ((caps.handover_model & FBSEC_DESC_HANDOVER_TOFU) != 0u)    ? " TOFU" : "",
+          ((caps.handover_model & FBSEC_DESC_HANDOVER_TOKEN) != 0u)   ? " token" : "",
+          ((caps.handover_model & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) ? " voucher" : "");
+}
+
+#if FBSEC_FEATURE_ASYM
+/**
+ * @brief RPK identity line (IDevID presence, owner epoch, ownership), plus
+ *        the claim hint while the device is still uncommissioned.
+ */
+static void print_rpk_identity(void) {
+  fprintf(stderr, "RPK identity: IDevID %s, owner epoch %lu, %s\n",
+          fbsec_server_asym_idevid_present() ? "present" : "absent",
+          (unsigned long)fbsec_server_asym_owner_epoch(),
+          fbsec_server_asym_is_uncommissioned() ? "not yet claimed" : "owned");
+  if (fbsec_server_lifecycle_commissioning() != FBSEC_STAT_COMMISSIONED) {
+    fprintf(stderr,
+            "  -> uncommissioned: from the client, use the L) lifecycle submenu\n"
+            "     to claim ownership (voucher) and install the Provisioning key\n");
+  }
+}
+#endif
+
+/**
+ * @brief Reprint the security-state lines a just-dispatched request changed:
+ *        the key-store line when a commissioning step assigned a new key, and
+ *        the commissioning + handover-gate lines when the lifecycle advanced.
+ *
+ * @param stage_before  lifecycle stage sampled before dispatch.
+ * @param mask_before   @ref server_key_mask sampled before dispatch.
+ */
+static void reprint_on_change(fbsec_lifecycle_stage_t stage_before,
+                              uint8_t mask_before) {
+  uint8_t                 mask_after  = server_key_mask();
+  fbsec_lifecycle_stage_t stage_after = fbsec_server_lifecycle_get();
+  if (mask_after != mask_before) {
+    print_key_store();
+  }
+  if (stage_after != stage_before) {
+    print_commissioning();
+    print_handover_gate();
+  }
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
@@ -246,39 +336,15 @@ int main(int argc, char **argv) {
           (unsigned)(FBSEC_SERVER_ENTRY_RPK_RD_DATA_ID >> 16),
           (unsigned)(FBSEC_SERVER_ENTRY_RPK_WR_DATA_ID >> 16));
 #endif
-  fprintf(stderr,
-          "key store: keyid 1 (Provisioning Session Key) %s, "
-          "keyid 2 (Integrator Session Key) %s, "
-          "keyid 3 (Operator Session Key) %s\n",
-          fbsec_sod_has_key(FBSEC_DEMO_KEYID_PROVISIONING) ? "loaded" : "absent",
-          fbsec_sod_has_key(FBSEC_DEMO_KEYID_INTEGRATOR)   ? "loaded" : "absent",
-          fbsec_sod_has_key(FBSEC_DEMO_KEYID_OPERATOR)     ? "loaded" : "absent");
+  print_key_store();
 
   /* Live commissioning state: how this node presents on the bus right now,
      and, when uncommissioned, how it can be claimed. */
-  {
-    uint8_t      comm = fbsec_server_lifecycle_commissioning();
-    fbsec_caps_t caps;
-    fbsec_descriptor_build_caps(0u, &caps);
-    fprintf(stderr, "commissioning (C001h:01h): %s\n",
-            (comm == FBSEC_STAT_COMMISSIONED) ? "commissioned / owned"
-                                              : "uncommissioned");
-    fprintf(stderr, "handover gate (C000h:06h):%s%s%s\n",
-            ((caps.handover_model & FBSEC_DESC_HANDOVER_TOFU) != 0u)    ? " TOFU" : "",
-            ((caps.handover_model & FBSEC_DESC_HANDOVER_TOKEN) != 0u)   ? " token" : "",
-            ((caps.handover_model & FBSEC_DESC_HANDOVER_VOUCHER) != 0u) ? " voucher" : "");
+  print_commissioning();
+  print_handover_gate();
 #if FBSEC_FEATURE_ASYM
-    fprintf(stderr, "RPK identity: IDevID %s, owner epoch %lu, %s\n",
-            fbsec_server_asym_idevid_present() ? "present" : "absent",
-            (unsigned long)fbsec_server_asym_owner_epoch(),
-            fbsec_server_asym_is_uncommissioned() ? "not yet claimed" : "owned");
-    if (comm != FBSEC_STAT_COMMISSIONED) {
-      fprintf(stderr,
-              "  -> uncommissioned: from the client, use the L) lifecycle submenu\n"
-              "     to claim ownership (voucher) and install the Provisioning key\n");
-    }
+  print_rpk_identity();
 #endif
-  }
   fbsec_server_trace_print_legend();
 
   if (!SetConsoleCtrlHandler(ctrl_handler, TRUE)) {
@@ -719,9 +785,12 @@ static void run_dispatch_loop(void) {
       };
       uint32_t seg_data_id =
         fbsec_co_fd_data_id_from_index_sub(g_segdl.index, g_segdl.sub);
+      fbsec_lifecycle_stage_t st_before = fbsec_server_lifecycle_get();
+      uint8_t                 km_before = server_key_mask();
       fbsec_server_dispatch_request((uint16_t)g_segdl.src, seg_data_id,
                                     g_segdl.buf, g_segdl.total,
                                     send_reply_cb, &sctx);
+      reprint_on_change(st_before, km_before);
       g_segdl.active = false;
       continue;
     }
@@ -746,9 +815,12 @@ static void run_dispatch_loop(void) {
     /* Use the requester's node id as the dispatch's client_dev so
        per-client armed-slot bookkeeping is keyed correctly even when
        multiple clients share the bus. */
+    fbsec_lifecycle_stage_t st_before = fbsec_server_lifecycle_get();
+    uint8_t                 km_before = server_key_mask();
     fbsec_server_dispatch_request((uint16_t)pdu.src_node_id, data_id,
                                   pdu.data, pdu.data_len,
                                   send_reply_cb, &rctx);
+    reprint_on_change(st_before, km_before);
   }
 }
 

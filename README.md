@@ -57,8 +57,8 @@ key, and for each communication a per-session key is derived via
 HKDF(layer_master, salt, info). SOFA simulates both the masters and
 the derivation step out — what gets installed and what the wire
 keyid byte selects are the already-derived **session keys**. The
-three slots are therefore labelled *Provisioning Session Key*,
-*Integrator Session Key*, *Operator Session Key*. See the "Key Model"
+three slots are therefore labelled *Provisioning Key*,
+*Integrator Key*, *Operator Key*. See the "Key Model"
 and "Master Keys vs Session Keys" sections of the Integration Guide
 chapter in `doc/SOFA-UM-105.pdf` for the full discussion.
 The full key-provisioning lifecycle SOFA simulates out is specified in

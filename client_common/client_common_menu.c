@@ -147,9 +147,9 @@ static void prompt_key(void) {
   char line[16];
   for (;;) {
     printf("Select key:\n"
-           "  1) Provisioning Session Key (SRD & SWR access)\n"
-           "  2) Integrator Session Key (SRD, SWR access)\n"
-           "  3) Operator Session Key (SRD access only)\n"
+           "  1) Provisioning Key (SRD & SWR access)\n"
+           "  2) Integrator Key (SRD, SWR access)\n"
+           "  3) Operator Key (SRD access only)\n"
            "[default %u]: ",
            (unsigned)((fbsec_client_keys_keyid() != 0u)
                       ? FBSEC_AEAD_KEYID_BASE(fbsec_client_keys_keyid())
@@ -992,6 +992,12 @@ static void lifecycle_run_ladder(const fbsec_secure_transport_t *transport,
     printf("  key ladder failed (rc=%d)\n", rc);
   } else {
     printf("     all session keys set; device Operational\n");
+    /* Keys are now assigned: offer the one-time key choice so the operator
+       picks which key subsequent verbs use. ensure_key_selected only prompts
+       while no key is fixed, so a --keyid / --key on the command line and any
+       earlier choice are left untouched, making this a single prompt. */
+    printf("\n");
+    ensure_key_selected();
   }
 }
 #endif
