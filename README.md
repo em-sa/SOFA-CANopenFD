@@ -13,6 +13,14 @@ with an AES-128-GCM secure tunnel whose AAD covers addressing
 (server / client node IDs, the object multiplexor) and the key-selector byte. See
 `doc/` for the wire spec and the integration guides.
 
+> **This is SOFA Gen 1**, frozen at tag `v1.0.0`. It implements the unilateral
+> secure access model of EmSA WP-104 and WP-105, with the security object
+> dictionary and the signature transcript aligned to the CiA 720 series as of
+> July 2026. Gen 2 is in preparation on the `gen2` branch and changes the access
+> model, the associated data layout, the key selector encoding and the object
+> index map. **Gen 2 is not wire compatible with Gen 1** and will not interoperate
+> with the published demo binaries. Check out `v1.0.0` if you want the shipped demo.
+
 > ⚠️ **Demonstrator — not for production.** SOFA is a teaching and
 > porting reference. It ships with **publicly known demo keys**
 > (`run/keys-demo.txt`), simulates the key-provisioning/derivation
